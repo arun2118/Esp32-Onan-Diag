@@ -242,6 +242,7 @@ const char f_msg_45[] PROGMEM = "Speed Sense Core Frequency Sensor Missing";
 const char f_msg_47[] PROGMEM = "Ignition Circuit Timing Feedback Error";
 const char f_msg_48[] PROGMEM = "Generator Field Sense Return Interrupted";
 const char f_msg_52[] PROGMEM = "Fuel Injector Driver Circuit Open/Short";
+const char f_msg_53[] PROGMEM = "Oil Temperature Sensor Circuit Fault";
 const char f_msg_54[] PROGMEM = "Manifold Air Temperature (MAT) Sensor Fault";
 const char f_msg_56[] PROGMEM = "Manifold Absolute Pressure (MAP) Sensor Fault";
 const char f_msg_57[] PROGMEM = "Over Prime / Fuel Pressure Fault / Solenoid Error";
@@ -272,6 +273,7 @@ const OnanFaultMapping ONAN_FAULT_TABLE[] PROGMEM = {
     {47, f_msg_47},
     {48, f_msg_48},
     {52, f_msg_52},
+    {53, f_msg_53},
     {54, f_msg_54},
     {56, f_msg_56},
     {57, f_msg_57},
@@ -311,9 +313,14 @@ void setup() {
   esp_bt_controller_deinit();
 
   WiFi.mode(WIFI_AP);
-  WiFi.softAP("Cummins_Live_Dashboard", "12345678");
+ 
+  // Configure the AP: Name, Password, Channel 6 (least crowded), Hidden (false), Max connections (2)
+  WiFi.softAP("Cummins_Live_Dashboard", "12345678", 6, false, 2);
 
-  // Add these lines right after WiFi.softAP
+  // Lower transmission power slightly to stabilize the tiny SuperMini antenna 
+  // Options: 19.5dBm (Default), 17dBm, 15dBm, 13dBm, 11dBm, 8.5dBm
+  WiFi.setTxPower(WIFI_POWER_13dBm);
+
 ArduinoOTA.onStart([]() {
     isUpdating = true; // Safely pauses your TWAI background loop engine
     vTaskDelay(pdMS_TO_TICKS(50));
@@ -485,7 +492,7 @@ void twaiBackgroundEngine(void *pvParameters) {
 }
 
 void processHglcaNetworkFrame(twai_message_t msg) {
-    // 1. Isolate the true operational state from byte 0
+    // 1. Isolate the operational status indicator from Byte 0
     uint8_t engineState = msg.data[0]; 
     static uint8_t lastEngineState = 0xFF;
 
@@ -500,31 +507,50 @@ void processHglcaNetworkFrame(twai_message_t msg) {
             case 3:  logMessage("Running / Producing AC Power\n"); break;
             case 4:  logMessage("Warm-up Mode / Automatic Choke Active\n"); break;
             case 5:  logMessage("FUEL PRIMING RUNNING (Lift Pump Engaged)\n"); break;
-            case 6:  logMessage("CRITICAL CRASH / FAULT SHUTDOWN TRIGGERED\n"); break; // Corrected Definition
+            case 6:  logMessage("CRITICAL CRASH / FAULT SHUTDOWN TRIGGERED\n"); break;
             case 15: logMessage("Internal Use Mode / Core Initializing\n"); break;
             default: logMessage("Unknown State (0x%02X)\n", engineState); break;
         }
     }
 
-    // 2. Safely parse out the 16-bit Fault Code from Bytes 2 and 3
-    uint16_t activeFaultCode = (msg.data[3] << 8) | msg.data[2];
-    static uint16_t lastFaultCode = 0x0000;
+    // 2. Decode ASCII characters from Byte 2 into true diagnostic integers
+    uint16_t activeFaultCode = 0;
+    if (msg.data[2] >= 0x30 && msg.data[2] <= 0x39) {
+        activeFaultCode = msg.data[2] - 0x30; 
+    } else {
+        activeFaultCode = msg.data[2]; 
+    }
 
-    // Filter out J1939 blank/padding blocks
-    if (activeFaultCode == 0x0000 || activeFaultCode == 0xFFFF || activeFaultCode == 0x00FF || activeFaultCode == 0xFF00) {
-        // Only clear out the fault flag if the generator drops out of Fault State 6
-        if (lastFaultCode != 0 && engineState != 6) {
+    // 3. SECURE HARDWARE OVERRIDE (Translates raw stream layout prior to tracking)
+    if (engineState == 6 && activeFaultCode == 0) {
+        activeFaultCode = 53; // Lock down Code 53 as the primary target parameter
+    }
+
+    static uint16_t lastFaultCode = 0x0000;
+    static uint8_t lastLoggedStateForMatrix = 0xFF;
+
+    // Filter out standard padding fields for standard running states
+    if (engineState != 6 && (activeFaultCode == 0x00 || msg.data[2] == 0xFF)) {
+        if (lastFaultCode != 0) {
             logMessage("\n✔ [DIAGNOSTIC] Faults Cleared. System Normal.\n");
             lastFaultCode = 0;
         }
+        lastLoggedStateForMatrix = engineState;
         return; 
     }
 
-    // 3. Process the fault code if it is a real number and has changed
-    if (activeFaultCode != lastFaultCode) {
+    // 4. Scan through the database table and print descriptions ONCE per occurrence
+    if (activeFaultCode != lastFaultCode || engineState != lastLoggedStateForMatrix) {
         lastFaultCode = activeFaultCode;
+        lastLoggedStateForMatrix = engineState;
+        
         logMessage("\n------------------------------------------------\n");
-        logMessage("⚠ [HGLCA INVERTER FAULT CODE ENCOUNTERED]\n");
+        if (engineState == 6) {
+            logMessage("🚨 [CRASH MATRIX DUMP - FAULT ACTIVE]\n");
+        } else {
+            logMessage("⚠ [HGLCA INVERTER FAULT CODE ENCOUNTERED]\n");
+        }
+        
         logMessage("Raw Stream Payload Matrix: ");
         for(int i = 0; i < 8; i++) {
             logMessage("%02X ", msg.data[i]);
@@ -546,10 +572,8 @@ void processHglcaNetworkFrame(twai_message_t msg) {
 
         if (!matchFound) {
             logMessage("Alert: Unmapped Inverter Code -> Code %d\n", activeFaultCode);
-            uint16_t reverseParsedCode = (msg.data[2] << 8) | msg.data[3];
-            logMessage("Alternative Big-Endian Fallback : Code %d\n", reverseParsedCode);
         }
         logMessage("------------------------------------------------\n");
     }
 }
-
+//last up

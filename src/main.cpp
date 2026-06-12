@@ -576,4 +576,4 @@ void processHglcaNetworkFrame(twai_message_t msg) {
         logMessage("------------------------------------------------\n");
     }
 }
-//last up
+//last up-

@@ -2,6 +2,11 @@
 
 A lightweight, high-performance ESP32 application designed to interface with the digital controller of a **Cummins Onan HGLCA (Gasoline/Inverter)** RV generator. By tapping into the vehicle's secondary CAN bus framework via custom protocol reverse-engineering, this system maps proprietary operational state transitions, tracks heavy-duty diagnostic parameters, and serves a thread-safe live diagnostic dashboard right to your web browser.
 
+
+
+<img width="1532" height="969" alt="circuit_image" src="https://github.com/user-attachments/assets/8c418f4c-76ec-45f3-a1aa-15ad97b0558e" />
+<img width="494" height="273" alt="Screenshot 2026-06-11 135819" src="https://github.com/user-attachments/assets/a7a3e850-8a35-4710-a52f-0cc2abd3cd3e" />
+
 ---
 
 ## 🚀 Key Features

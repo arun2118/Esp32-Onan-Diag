@@ -94,14 +94,14 @@ Unlike standard J1939 frameworks, the HGLCA CAN digital architecture treats its 
 
 ## 🔌 Hardware Schematics & Pinout Mapping
 
-The system is powered directly via the vehicle/coach 12V battery system. A high-efficiency step-down buck converter supplies the microcontroller, while the isolated CAN transceiver utilizes the micro-controller's internal 3.3V regulator to maintain clean logic-level matching across the data bus lines.
+The system is powered directly via the vehicle 12V battery system. A high-efficiency step-down buck converter supplies the microcontroller, while the isolated CAN transceiver utilizes the micro-controller's internal 3.3V regulator to maintain clean logic-level matching across the data bus lines.
 
 ### 📍 Hardware Pin Connection Index
 
 | Component A (Source) | Terminal / Pin Name | Component B (Destination) | Wire Color in Print | Purpose / Context |
 | :--- | :--- | :--- | :--- | :--- |
-| **12V Battery / Coach** | **[ + ] Positive** | 5V Buck Converter (IN+) | 🔴 Red | Raw Power Supply Input |
-| **12V Battery / Coach** | **[ - ] Negative** | 5V Buck Converter (IN-) | ⚫ Black | System Ground Reference |
+| **12V Battery** | **[ + ] Positive** | 5V Buck Converter (IN+) | 🔴 Red | Raw Power Supply Input |
+| **12V Battery** | **[ - ] Negative** | 5V Buck Converter (IN-) | ⚫ Black | System Ground Reference |
 | **5V Buck Converter** | **[ + ] Output** | ESP32-C3 SM (**5V**) | 🧠 Pink / Magenta | Main Microcontroller Power |
 | **5V Buck Converter** | **[ - ] Output** | ESP32-C3 SM (**G**) | 🟢 Green | Common Power Ground |
 | **ESP32-C3 SuperMini** | **3.3V** | SN65HVD230 (**3V3**) | 🟠 Orange | Transceiver Power Rail |

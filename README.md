@@ -1,6 +1,31 @@
+<div align="center">
+
 # Cummins Onan HGLCA Diagnostic Engine & Telematics Gateway
 
 A lightweight, high-performance ESP32 application designed to interface with the digital controller of a **Cummins Onan HGLCA (Gasoline/Inverter)** RV generator. By tapping into the vehicle's secondary CAN bus framework via custom protocol reverse-engineering, this system maps proprietary operational state transitions, tracks heavy-duty diagnostic parameters, and serves a thread-safe live diagnostic dashboard right to your web browser.
+
+---
+
+### 🚧 DEVELOPMENT STATUS: WORK IN PROGRESS 🚧
+*This project is currently under active development and field-testing. The protocol mapping is being reverse-engineered sequentially; as a result, **not all factory fault codes, operational sub-states, or diagnostic variables have been mapped out yet.** Features and code structures are subject to changes as new network frames are cataloged.*
+
+---
+
+<table> 
+<tr> 
+<td align="center" valign="top"> 
+<img src="https://github.com" alt="circuit_image" height="250" /><br /> 
+<sub><b>Circuit Diagram</b></sub> 
+</td> 
+<td align="center" valign="top"> 
+<img src="https://github.com" alt="Screenshot 2026-06-11 135819" height="250" /><br /> 
+<sub><b>Onan CAN</b></sub> 
+</td> 
+</tr> 
+</table> 
+
+</div>
+
 
 <div align="center"> 
 <table> 

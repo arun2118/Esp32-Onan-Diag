@@ -4,8 +4,21 @@ A lightweight, high-performance ESP32 application designed to interface with the
 
 
 
-<img width="1532" height="969" alt="circuit_image" src="https://github.com/user-attachments/assets/8c418f4c-76ec-45f3-a1aa-15ad97b0558e" />
-<img width="494" height="273" alt="Screenshot 2026-06-11 135819" src="https://github.com/user-attachments/assets/a7a3e850-8a35-4710-a52f-0cc2abd3cd3e" />
+<div align="center">
+  <table>
+    <tr>
+      <td align="center" valign="top">
+        <img src="https://github.com/user-attachments/assets/8c418f4c-76ec-45f3-a1aa-15ad97b0558e" alt="circuit_image" height="250" /><br />
+        <sub><b>Circuit Diagram</b></sub>
+      </td>
+      <td align="center" valign="top">
+        <img src="https://github.com/user-attachments/assets/a7a3e850-8a35-4710-a52f-0cc2abd3cd3e" alt="Screenshot 2026-06-11 135819" height="250" /><br />
+        <sub><b>System Screenshot</b></sub>
+      </td>
+    </tr>
+  </table>
+</div>
+
 
 ---
 

@@ -11,20 +11,6 @@ A lightweight, high-performance ESP32 application designed to interface with the
 
 ---
 
-<table> 
-<tr> 
-<td align="center" valign="top"> 
-<img src="https://github.com" alt="circuit_image" height="250" /><br /> 
-<sub><b>Circuit Diagram</b></sub> 
-</td> 
-<td align="center" valign="top"> 
-<img src="https://github.com" alt="Screenshot 2026-06-11 135819" height="250" /><br /> 
-<sub><b>Onan CAN</b></sub> 
-</td> 
-</tr> 
-</table> 
-
-</div>
 
 
 <div align="center"> 

@@ -11,7 +11,7 @@ A lightweight, high-performance ESP32 application designed to interface with the
 
 ---
 
-
+</div>
 
 <div align="center"> 
 <table> 

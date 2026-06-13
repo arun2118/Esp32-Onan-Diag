@@ -1,6 +1,7 @@
 /* 
- 6-12-26  --- adding remote control
- 
+ 6-13-26  --- fix bin upload issue
+
+
 1. Open wifi setting on device and  connect to "Cummins_Live_Dashboard" with password "12345678"
 2. Open any browser go to address "192.168.4.1"
 

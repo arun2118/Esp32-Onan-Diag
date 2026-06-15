@@ -1,11 +1,7 @@
-/* 
- 6-15-26  --- new branch
-
-1. Open wifi setting on device and  connect to "Cummins_Live_Dashboard" with password "12345678"
-2. Open any browser go to address "192.168.4.1"
-
+/* 6-15-26 --- New branch with Active Controller Loop
+   1. Open Wi-Fi settings on your device and connect to "Cummins_Live_Dashboard" (Password: 12345678)
+   2. Open any browser and navigate to "192.168.4.1" 
 */
-
 #include <Arduino.h>
 #include "driver/twai.h"
 #include "esp_wifi.h"
@@ -13,16 +9,14 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <Update.h>
-#include <stdarg.h> // Required for va_list / vsnprintf inside logMessage
+#include <stdarg.h>
 #include <ArduinoOTA.h>
 #include <LittleFS.h>
 #include <esp_task_wdt.h>
 
-// Connection to 
 #define CTX_PIN GPIO_NUM_1
 #define CRX_PIN GPIO_NUM_0
-
-#define STATUS_LED_PIN GPIO_NUM_8  
+#define STATUS_LED_PIN GPIO_NUM_8
 
 // Heartbeat tracking variables
 unsigned long lastLedToggle = 0;
@@ -33,49 +27,41 @@ bool ledState = false;
 String webLogBuffer = "";
 WebServer server(80);
 bool isUpdating = false;
-
-// Global Counter tracking total events since ESP32 powered up
 unsigned long globalLogEntryCounter = 0;
+
+// Dynamic Cyclic State Trackers for Remote Control
+enum GenControlCommand { CMD_RELEASE = 0, CMD_START = 1, CMD_STOP = 2, CMD_PRIME = 5 };
+volatile GenControlCommand currentActiveCommand = CMD_RELEASE;
 
 // FreeRTOS Synchronization Handles
 TaskHandle_t xTwaiTaskHandle = NULL;
 SemaphoreHandle_t logMutex = NULL;
 
-// Unified Thread-Safe Logger with Flash File Storage
+// Unified Thread-Safe Logger
 void logMessage(const char* format, ...) {
-    // 1. Calculate ESP32 System Uptime in HH:MM:SS format
     unsigned long totalSeconds = millis() / 1000;
     unsigned int seconds = totalSeconds % 60;
     unsigned int minutes = (totalSeconds / 60) % 60;
     unsigned int hours = (totalSeconds / 3600);
-
-    // 2. Format the custom timestamp header string
     char header_buf[32];
-    // Check if the message is a new line or a continuation block
-    // This adds "[#123 @ 01:23:45] " to the beginning of log messages
+
     if (format[0] != '\n' && format[0] != '-' && format[0] != '_') {
         globalLogEntryCounter++;
-        snprintf(header_buf, sizeof(header_buf), "[#%lu @ %02u:%02u:%02u] ", 
-                 globalLogEntryCounter, hours, minutes, seconds);
+        snprintf(header_buf, sizeof(header_buf), "[#%lu @ %02u:%02u:%02u] ", globalLogEntryCounter, hours, minutes, seconds);
     } else {
-        header_buf[0] = '\0'; // Leave empty for raw breaks or separators
+        header_buf[0] = '\0';
     }
 
-    // 3. Format the actual text payload
     char payload_buf[256];
     va_list arg;
     va_start(arg, format);
     vsnprintf(payload_buf, sizeof(payload_buf), format, arg);
     va_end(arg);
 
-    // 4. Combine header and payload into a single localized buffer
     char final_buf[300];
     snprintf(final_buf, sizeof(final_buf), "%s%s", header_buf, payload_buf);
-
-    // 5. Output to local USB Serial Monitor
     Serial.print(final_buf);
 
-    // 6. Thread-Safe Append to Dynamic Web Buffer
     if (logMutex != NULL && xSemaphoreTake(logMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
         webLogBuffer += String(final_buf);
         if(webLogBuffer.length() > 6000) {
@@ -84,14 +70,12 @@ void logMessage(const char* format, ...) {
         xSemaphoreGive(logMutex);
     }
 
-    // 7. Append directly to the LittleFS Flash .txt file
     File logFile = LittleFS.open("/log.txt", FILE_APPEND);
     if (logFile) {
         logFile.print(final_buf);
         logFile.close();
     }
 
-    // 8. Size Safety Guard Loop (Keeps flash usage clean under 50KB)
     static unsigned long lastSizeCheck = 0;
     if (millis() - lastSizeCheck > 30000) {
         lastSizeCheck = millis();
@@ -115,133 +99,41 @@ void logMessage(const char* format, ...) {
         }
     }
 }
-
-
-
-// Fixed Web Interface Layout (Added Download & Wipe capabilities with safe HTML entities)
-// Revised Web Interface Layout with Power Ignition Controls (No Diagnostic Polling)
-// Revised Web Interface Layout featuring Safe Character Entities
-const char* htmlDashboard = "<!DOCTYPE html><html><head>"
-"<meta charset='utf-8'>" 
-"<meta name='viewport' content='width=device-width, initial-scale=1'>"
-"<style>"
-"body{font-family:sans-serif; background:#121212; color:#e0e0e0; padding:20px; text-align:center;}"
+// HTML layout defined in flash storage
+const char htmlDashboard[] PROGMEM = "<!DOCTYPE html><html><head>"
+"<meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>"
+"<style>body{font-family:sans-serif; background:#121212; color:#e0e0e0; padding:20px; text-align:center;}"
 "h2, h3{color:#00adb5;} .box{background:#1e1e1e; padding:15px; border-radius:8px; margin: 0 auto 20px auto; max-width:700px; border:1px solid #333;}"
 "pre{background:#000; color:#0f0; padding:15px; border-radius:5px; overflow-y:scroll; height:400px; font-family:monospace; text-align:left; white-space:pre-wrap; margin-bottom:15px;}"
 "input[type=file]{background:#2d2d2d; padding:8px; border-radius:4px; color:#fff; border:1px solid #444; margin-right:10px;}"
 "input[type=button], .btn-action{background:#00adb5; color:#fff; border:none; padding:10px 20px; border-radius:4px; cursor:pointer; font-weight:bold; font-size:14px; text-decoration:none; display:inline-block; margin:5px;}"
-"input[type=button]:hover, .btn-action:hover{background:#01c3cc;}"
-".btn-clear{background:#3d3d3d;}"
-".btn-clear:hover{background:#4d4d4d;}"
-".btn-start{background:#5cb85c;}"
-".btn-start:hover{background:#4cae4c;}"
-".btn-stop{background:#d9534f;}"
-".btn-stop:hover{background:#c9302c;}"
-".btn-prime{background:#f0ad4e; color:#222;}"
-".btn-prime:hover{background:#f0b95e;}"
-".progress-container{width:100%; background-color:#2d2d2d; border-radius:4px; margin-top:15px; display:none; border:1px solid #444;}"
+"input[type=button]:hover, .btn-action:hover{background:#01c3cc;}.btn-clear{background:#3d3d3d;}.btn-clear:hover{background:#4d4d4d;}"
+".btn-start{background:#5cb85c;}.btn-start:hover{background:#4cae4c;}.btn-stop{background:#d9534f;}.btn-stop:hover{background:#c9302c;}"
+".btn-prime{background:#f0ad4e; color:#222;}.btn-prime:hover{background:#f0b95e;}.progress-container{width:100%; background-color:#2d2d2d; border-radius:4px; margin-top:15px; display:none; border:1px solid #444;}"
 ".progress-bar{width:0%; height:20px; background-color:#00adb5; border-radius:4px; text-align:center; line-height:20px; color:white; font-size:12px; transition: width 0.1s linear;}"
-"#status-msg{margin-top:10px; font-weight:bold; color:#ffb703;}"
-"</style></head><body>"
+"#status-msg{margin-top:10px; font-weight:bold; color:#ffb703;}</style></head><body>"
 "<h2>Cummins HGLCA Diagnostic Dashboard v1.6</h2>"
-"<div class='box'>"
-"  <h3>Live Telemetry Monitor</h3>"
-"  <pre id='terminal'>Connecting to telemetry engine...</pre>"
-"  <a href='/download-log' download='onan_generator_log.txt' class='btn-action'>💾 Download Log (.txt)</a>"
-"  <button onclick='clearSystemLog()' class='btn-action btn-clear'>🗑 Wipe Saved Log</button>"
-"</div>"
-"<div class='box'>"
-"  <h3>⚡ Remote Powertrain Control Panel</h3>"
-"  <button onclick='controlGenerator(\"/gen-prime\")' class='btn-action btn-prime'>💽 Prime Fuel System</button>"
-"  <button onclick='controlGenerator(\"/gen-start\")' class='btn-action btn-start'>🚀 Crank Engine / Start</button>"
-"  <button onclick='controlGenerator(\"/gen-stop\")' class='btn-action btn-stop'>🛑 Kill Engine / Stop</button>"
-"</div>"
-"<div class='box'>"
-"  <h3>Wireless Firmware Management</h3>"
-"  <form id='upload-form' enctype='multipart/form-data'>"
-"    <input type='file' id='file-input' name='update' accept='.bin' required> "
-"    <input type='button' value='Upload New Code (.bin)' onclick='uploadFile()'>"
-"  </form>"
-"  <div class='progress-container' id='prg-wrapper'><div class='progress-bar' id='prg-bar'>0%</div></div>"
-"  <div id='status-msg'></div>"
-"</div>"
-"<script>"
-"  var term = document.getElementById('terminal');"
-"  var jsUpdating = false;"
-"  function pollTelemetry() {"
-"    if(jsUpdating) return;"
-"    fetch('/telemetry')"
-"    .then(response => response.text())"
-"    .then(text => {"
-"      if(text.trim() !== '') {"
-"        term.innerHTML = text;"
-"        term.scrollTop = term.scrollHeight;"
-"      }"
-"    })"
-"    .catch(() => {"
-"      term.innerHTML = '<br><span style=\"color:red;\">[Network Polling Offline - Resetting...]</span>';"
-"    });"
-"  }"
-"  var intervalId = setInterval(pollTelemetry, 500);"
-"  function controlGenerator(urlRoute) {"
-"    fetch(urlRoute, {method: 'POST'});"
-"  }"
-"  function clearSystemLog() {"
-"    if(confirm('Are you sure you want to permanently erase the flash log history?')) {"
-"      fetch('/clear-log', {method: 'POST'})"
-"      .then(res => { if(res.ok) { alert('Log successfully cleared from flash memory!'); term.innerHTML = ''; } });"
-"    }"
-"  }"
-"  function uploadFile() {"
-"    var fileInput = document.getElementById('file-input');"
-"    if(fileInput.files.length === 0) { alert('Please select a .bin file first!'); return; }"
-"    jsUpdating = true;"
-"    var fileBlob = fileInput.files[0];" // 🎯 FIXED: Extracts raw binary block instead of FileList metadata
-"    var formData = new FormData();"
-"    formData.append('update', fileBlob);"
-"    var xhr = new XMLHttpRequest();"
-"    xhr.open('POST', '/update', true);"
-"    document.getElementById('prg-wrapper').style.display = 'block';"
-"    document.getElementById('status-msg').innerText = 'Uploading firmware payload...';"
-"    xhr.upload.addEventListener('progress', function(e) {"
-"      if(e.lengthComputable) {"
-"        var percent = Math.round((e.loaded / e.total) * 100);"
-"        document.getElementById('prg-bar').style.width = percent + '%';"
-"        document.getElementById('prg-bar').innerText = percent + '%';"
-"        if(percent === 100) { document.getElementById('status-msg').innerText = 'Writing flash memory... Please wait.'; }"
-"      }"
-"    });"
-"    xhr.onload = function() {"
-"      if(xhr.status === 200) {"
-"        document.getElementById('status-msg').style.color = '#00ff00';"
-"        document.getElementById('status-msg').innerHTML = '✅ Update Success! Microcontroller is rebooting now...';"
-"      } else {"
-"        document.getElementById('status-msg').style.color = '#ff0000';"
-"        document.getElementById('status-msg').innerText = '❌ Update Failed: ' + xhr.responseText;"
-"        jsUpdating = false;"
-"      }"
-"    };"
-"    xhr.onerror = function() { "
-"      document.getElementById('status-msg').style.color = '#ff0000';"
-"      document.getElementById('status-msg').innerText = '❌ Connection lost during flash procedure.';"
-"    };"
-"    xhr.send(formData);"
-"  }"
-"</script></body></html>";
+"<div class='box'><h3>Live Telemetry Monitor</h3><pre id='terminal'>Connecting to telemetry engine...</pre>"
+"<a href='/download-log' download='onan_generator_log.txt' class='btn-action'>💾 Download Log (.txt)</a>"
+"<button onclick='clearSystemLog()' class='btn-action btn-clear'>🗑 Wipe Saved Log</button></div>"
+"<div class='box'><h3>⚡ Remote Powertrain Control Panel</h3>"
+"<button onclick='controlGenerator(\"/gen-prime\")' class='btn-action btn-prime'>💽 Prime Fuel System</button>"
+"<button onclick='controlGenerator(\"/gen-start\")' class='btn-action btn-start'>🚀 Crank Engine / Start</button>"
+"<button onclick='controlGenerator(\"/gen-stop\")' class='btn-action btn-stop'>🛑 Kill Engine / Stop</button></div>"
+"<div class='box'><h3>Wireless Firmware Management</h3><form id='upload-form' enctype='multipart/form-data'>"
+"<input type='file' id='file-input' name='update' accept='.bin' required>"
+"<input type='button' value='Upload New Code (.bin)' onclick='uploadFile()'></form>"
+"<div class='progress-container' id='prg-wrapper'><div class='progress-bar' id='prg-bar'>0%</div></div><div id='status-msg'></div></div>"
+"<script>var term = document.getElementById('terminal'); var jsUpdating = false;"
+"function pollTelemetry() { if(jsUpdating) return; fetch('/telemetry').then(response => response.text()).then(text => { if(text.trim() !== '') { term.innerHTML = text; term.scrollTop = term.scrollHeight; } }).catch(() => { term.innerHTML = '<br><span style=\"color:red;\">[Network Polling Offline - Resetting...]</span>'; }); }"
+"var intervalId = setInterval(pollTelemetry, 500); function controlGenerator(urlRoute) { fetch(urlRoute, {method: 'POST'}); }"
+"function clearSystemLog() { if(confirm('Are you sure you want to permanently erase the flash log history?')) { fetch('/clear-log', {method: 'POST'}).then(res => { if(res.ok) { alert('Log successfully cleared from flash memory!'); term.innerHTML = ''; } }); } }"
+"function uploadFile() { var fileInput = document.getElementById('file-input'); if(fileInput.files.length === 0) { alert('Please select a .bin file first!'); return; } jsUpdating = true; var fileBlob = fileInput.files[0]; var formData = new FormData(); formData.append('update', fileBlob); var xhr = new XMLHttpRequest(); xhr.open('POST', '/update', true); document.getElementById('prg-wrapper').style.display = 'block'; document.getElementById('status-msg').innerText = 'Uploading firmware payload...';"
+"xhr.upload.addEventListener('progress', function(e) { if(e.lengthComputable) { var percent = Math.round((e.loaded / e.total) * 100); document.getElementById('prg-bar').style.width = percent + '%'; document.getElementById('prg-bar').innerText = percent + '%'; if(percent === 100) { document.getElementById('status-msg').innerText = 'Writing flash memory... Please wait.'; } } });"
+"xhr.onload = function() { if(xhr.status === 200) { document.getElementById('status-msg').style.color = '#00ff00'; document.getElementById('status-msg').innerHTML = '✅ Update Success! Microcontroller is rebooting now...'; } else { document.getElementById('status-msg').style.color = '#ff0000'; document.getElementById('status-msg').innerText = '❌ Update Failed: ' + xhr.responseText; jsUpdating = false; } };"
+"xhr.onerror = function() { document.getElementById('status-msg').style.color = '#ff0000'; document.getElementById('status-msg').innerText = '❌ Connection lost during flash procedure.'; }; xhr.send(formData); }</script></body></html>";
 
-
-
-
-// ============================================================================
-// CUMMINS ONAN HGLCA FAULT DATABASE Configuration (Chapter 10 Service Manual)
-// ============================================================================
-
-struct OnanFaultMapping {
-    uint16_t faultNumber;
-    const char* displayLabel;
-};
-
-// Define text strings individually in flash memory to completely protect SRAM
+struct OnanFaultMapping { uint16_t faultNumber; const char* displayLabel; };
 const char f_msg_01[] PROGMEM = "Engine Temperature Exceeded Limit";
 const char f_msg_04[] PROGMEM = "Over Crank Fault";
 const char f_msg_06[] PROGMEM = "Low Oil Level / Pressure Failure";
@@ -271,392 +163,265 @@ const char f_msg_57[] PROGMEM = "Over Prime / Fuel Pressure Fault / Solenoid Err
 const char f_msg_58[] PROGMEM = "Exhaust Gas Temperature Exhaust Limit Tripped";
 const char f_msg_73[] PROGMEM = "AC Output Circuit Overcurrent Fault";
 
-// Master Table reference layout
 const OnanFaultMapping ONAN_FAULT_TABLE[] PROGMEM = {
-    {1,  f_msg_01},
-    {4,  f_msg_04},
-    {6,  f_msg_06},
-    {12, f_msg_12},
-    {13, f_msg_13},
-    {14, f_msg_14},
-    {15, f_msg_15},
-    {19, f_msg_19},
-    {22, f_msg_22},
-    {27, f_msg_27},
-    {29, f_msg_29},
-    {32, f_msg_32},
-    {35, f_msg_35},
-    {36, f_msg_36},
-    {37, f_msg_37},
-    {38, f_msg_38},
-    {41, f_msg_41},
-    {43, f_msg_43},
-    {45, f_msg_45},
-    {47, f_msg_47},
-    {48, f_msg_48},
-    {52, f_msg_52},
-    {53, f_msg_53},
-    {54, f_msg_54},
-    {56, f_msg_56},
-    {57, f_msg_57},
-    {58, f_msg_58},
-    {73, f_msg_73}
+    {1, f_msg_01}, {4, f_msg_04}, {6, f_msg_06}, {12, f_msg_12}, {13, f_msg_13},
+    {14, f_msg_14}, {15, f_msg_15}, {19, f_msg_19}, {22, f_msg_22}, {27, f_msg_27},
+    {29, f_msg_29}, {32, f_msg_32}, {35, f_msg_35}, {36, f_msg_36}, {37, f_msg_37},
+    {38, f_msg_38}, {41, f_msg_41}, {43, f_msg_43}, {45, f_msg_45}, {47, f_msg_47},
+    {48, f_msg_48}, {52, f_msg_52}, {53, f_msg_53}, {54, f_msg_54}, {56, f_msg_56},
+    {57, f_msg_57}, {58, f_msg_58}, {73, f_msg_73}
 };
-
-// Dynamically scale database size configuration automatically
 const int ONAN_DB_COUNT = sizeof(ONAN_FAULT_TABLE) / sizeof(ONAN_FAULT_TABLE[0]);
 
-// System Prototypes
 void processHglcaNetworkFrame(twai_message_t msg);
 void twaiBackgroundEngine(void *pvParameters);
-
-// Transmits network command frames to control engine relays
-void sendGeneratorCommand(uint8_t commandMode) {
-    twai_message_t tx_msg;
-    tx_msg.extd = 1;              
-    tx_msg.rtr = 0;               
-    tx_msg.data_length_code = 8;  // Control payloads require an 8-byte array
-    
-    // Priority: 3, PGN: 0x00E000 (Engine Control), Target: Global (0xFF), Source Address: 0x01
-    tx_msg.identifier = 0x0CE0FF01; 
-
-    // Initialize all data bytes to standard J1939 padding state
-    for(int i = 0; i < 8; i++) {
-        tx_msg.data[i] = 0xFF;
-    }
-
-    // Assign the required control flags directly to the FIRST byte of the array (Index 0)
-    switch(commandMode) {
-        case 1: // START COMMAND
-            tx_msg.data[0] = 0x01; // <-- FIXED: Explicitly target index 0
-            logMessage("\n📡 [REMOTE CONTROL] Transmitting STARTER CRANK command...\n");
-            break;
-            
-        case 2: // STOP COMMAND
-            tx_msg.data[0] = 0x02; // <-- FIXED: Explicitly target index 0
-            logMessage("\n📡 [REMOTE CONTROL] Transmitting ENGINE SHUTDOWN command...\n");
-            break;
-            
-        case 3: // PRIME COMMAND
-            tx_msg.data[0] = 0x05; // <-- FIXED: Explicitly target index 0
-            logMessage("\n📡 [REMOTE CONTROL] Transmitting FUEL LIFT PUMP PRIMING command...\n");
-            break;
-            
-        default: // RELEASE / IDLE COMMAND
-            tx_msg.data[0] = 0x00; // <-- FIXED: Explicitly target index 0
-            break;
-    }
-
-    // Queue the frame directly onto the physical bus line
-    twai_transmit(&tx_msg, pdMS_TO_TICKS(10));
-}
-
-
-
 void setup() {
-  Serial.begin(115200);
-  delay(500);
+    Serial.begin(115200);
+    delay(500);
 
-    // Initialize LittleFS
-    if (!LittleFS.begin(true)) { // "true" formats the file system if it fails to mount
+    if (!LittleFS.begin(true)) {
         Serial.println("❌ LittleFS Mount Failed!");
     } else {
         Serial.println("📂 LittleFS Mounted Successfully.");
-    }  
-
-    // Set up the indicator LED pin target
-  pinMode(STATUS_LED_PIN, OUTPUT);
-
-  logMutex = xSemaphoreCreateMutex();
-
-  logMessage("=============================================\n");
-  logMessage("    Cummins J1939 Threaded Engine Active    \n");
-  logMessage("=============================================\n");
-
-  esp_bt_controller_disable();
-  esp_bt_controller_deinit();
-
-  WiFi.mode(WIFI_AP);
- 
-  // Configure the AP: Name, Password, Channel 6 (least crowded), Hidden (false), Max connections (2)
-  WiFi.softAP("Cummins_Live_Dashboard", "12345678", 6, false, 2);
-
-  // Lower transmission power slightly to stabilize the tiny SuperMini antenna 
-  // Options: 19.5dBm (Default), 17dBm, 15dBm, 13dBm, 11dBm, 8.5dBm
-  WiFi.setTxPower(WIFI_POWER_13dBm);
-
-ArduinoOTA.onStart([]() {
-    isUpdating = true; // Safely pauses your TWAI background loop engine
-    vTaskDelay(pdMS_TO_TICKS(50));
-    twai_stop();
-    twai_driver_uninstall();
-    Serial.println("VS Code OTA Flash Initiated...");
-});
-
-ArduinoOTA.onEnd([]() {
-    Serial.println("\nVS Code OTA Complete. Rebooting...");
-});
-
-ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-    Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
-});
-
-ArduinoOTA.onError([](ota_error_t error) {
-    Serial.printf("Error[%u]: ", error);
-    isUpdating = false; // Resume TWAI network loop if upload fails
-});
-
-ArduinoOTA.begin();
-
-
-  logMessage("Hotspot: Cummins_Live_Dashboard\n");
-  logMessage("URL:     http://%s\n", WiFi.softAPIP().toString().c_str());
-
-  server.on("/", HTTP_GET, []() {
-    server.send(200, "text/html", htmlDashboard);
-  });
-
-  // Telemetry Snapshot Endpoint
-  server.on("/telemetry", HTTP_GET, []() {
-    String logPayload = "";
-    if (logMutex != NULL && xSemaphoreTake(logMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
-      logPayload = webLogBuffer;
-      xSemaphoreGive(logMutex);
     }
-    logPayload.replace("\n", "<br>");
-    server.send(200, "text/plain", logPayload);
-  });
 
+    pinMode(STATUS_LED_PIN, OUTPUT);
+    logMutex = xSemaphoreCreateMutex();
+    logMessage("=============================================\n");
+    logMessage(" Cummins J1939 Active TX/RX Loop Engaged    \n");
+    logMessage("=============================================\n");
 
-// 🚀 Patched SYNCHRONOUS Firmware Receiver Route with Watchdog Reset Feeders
-server.on("/update", HTTP_POST, []() {
-    server.sendHeader("Connection", "close");
-    if (Update.hasError()) {
-        server.send(500, "text/plain", "Flash verification failed!");
-    } else {
-        server.send(200, "text/plain", "OK");
-        delay(2000);
-        ESP.restart(); 
-    }
-}, []() {
-    HTTPUpload& upload = server.upload();
-    
-    if (upload.status == UPLOAD_FILE_START) {
-        isUpdating = true; 
+    esp_bt_controller_disable();
+    esp_bt_controller_deinit();
+    WiFi.mode(WIFI_AP);
+    WiFi.softAP("Cummins_Live_Dashboard", "12345678", 6, false, 2);
+    WiFi.setTxPower(WIFI_POWER_13dBm);
+
+    ArduinoOTA.onStart([]() {
+        isUpdating = true;
         vTaskDelay(pdMS_TO_TICKS(50));
-        
         twai_stop();
         twai_driver_uninstall();
-        
-        Serial.printf("Flashing Firmware Image: %s\n", upload.filename.c_str());
-        if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
-            Update.printError(Serial);
+        Serial.println("VS Code OTA Flash Initiated...");
+    });
+    ArduinoOTA.onEnd([]() { Serial.println("\nVS Code OTA Complete. Rebooting..."); });
+    ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) { Serial.printf("Progress: %u%%\r", (progress / (total / 100))); });
+    ArduinoOTA.onError([](ota_error_t error) { Serial.printf("Error[%u]: ", error); isUpdating = false; });
+    ArduinoOTA.begin();
+
+    logMessage("Hotspot: Cummins_Live_Dashboard\n");
+    logMessage("URL: http://%s\n", WiFi.softAPIP().toString().c_str());
+
+    server.on("/", HTTP_GET, []() { server.send(200, "text/html", htmlDashboard); });
+    
+    server.on("/telemetry", HTTP_GET, []() {
+        String logPayload = "";
+        if (logMutex != NULL && xSemaphoreTake(logMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+            logPayload = webLogBuffer;
+            xSemaphoreGive(logMutex);
         }
-    } 
-    else if (upload.status == UPLOAD_FILE_WRITE) {
-        // 🎯 FEED WATCHDOG: Keeps background Wi-Fi and system threads running smoothly
-        yield(); 
-        
-        if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
-            Update.printError(Serial);
+        logPayload.replace("\n", "<br>");
+        server.send(200, "text/plain", logPayload);
+    });
+
+    server.on("/update", HTTP_POST, []() {
+        server.sendHeader("Connection", "close");
+        if (Update.hasError()) { server.send(500, "text/plain", "Flash verification failed!"); }
+        else { server.send(200, "text/plain", "OK"); delay(2000); ESP.restart(); }
+    }, []() {
+        HTTPUpload& upload = server.upload();
+        if (upload.status == UPLOAD_FILE_START) {
+            isUpdating = true;
+            vTaskDelay(pdMS_TO_TICKS(50));
+            twai_stop();
+            twai_driver_uninstall();
+            Serial.printf("Flashing Firmware Image: %s\n", upload.filename.c_str());
+            if (!Update.begin(UPDATE_SIZE_UNKNOWN)) { Update.printError(Serial); }
+        } else if (upload.status == UPLOAD_FILE_WRITE) {
+            yield();
+            if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) { Update.printError(Serial); }
+            yield();
+        } else if (upload.status == UPLOAD_FILE_END) {
+            if (Update.end(true)) { Serial.printf("Flash Process Finalized: %u bytes written.\n", upload.totalSize); }
+            else { Update.printError(Serial); }
         }
-        
-        // 🎯 SECOND FEED WATCHDOG: Feeds the hardware register right after the slow flash write completes
-        yield();
-    } 
-    else if (upload.status == UPLOAD_FILE_END) {
-        if (Update.end(true)) {
-            Serial.printf("Flash Process Finalized: %u bytes written.\n", upload.totalSize);
-        } else {
-            Update.printError(Serial);
+    });
+
+    server.on("/download-log", HTTP_GET, []() {
+        if (LittleFS.exists("/log.txt")) {
+            File file = LittleFS.open("/log.txt", FILE_READ);
+            server.sendHeader("Content-Disposition", "attachment; filename=onan_generator_log.txt");
+            server.streamFile(file, "text/plain");
+            file.close();
+        } else { server.send(404, "text/plain", "Log is currently empty."); }
+    });
+
+    server.on("/clear-log", HTTP_POST, []() {
+        LittleFS.remove("/log.txt");
+        if (logMutex != NULL && xSemaphoreTake(logMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+            webLogBuffer = ""; globalLogEntryCounter = 0;
+            xSemaphoreGive(logMutex);
         }
-    }
-});
+        server.send(200, "text/plain", "OK");
+    });
 
+    // Modified Endpoints updating the shared volatile command flag
+    server.on("/gen-start", HTTP_POST, []() { currentActiveCommand = CMD_START; server.send(200, "text/plain", "START_PENDING"); });
+    server.on("/gen-stop", HTTP_POST, []() { currentActiveCommand = CMD_STOP; server.send(200, "text/plain", "STOP_PENDING"); });
+    server.on("/gen-prime", HTTP_POST, []() { currentActiveCommand = CMD_PRIME; server.send(200, "text/plain", "PRIME_PENDING"); });
 
+    server.begin();
 
+    // FIXED: Switched driver mode from TWAI_MODE_LISTEN_ONLY to TWAI_MODE_NORMAL
+    twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(CTX_PIN, CRX_PIN, TWAI_MODE_NORMAL);
+    g_config.rx_queue_len = 64;
+    twai_timing_config_t t_config = TWAI_TIMING_CONFIG_250KBITS();
+    twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
 
-
-// 1. Download log Route
-server.on("/download-log", HTTP_GET, []() {
-    if (LittleFS.exists("/log.txt")) {
-        File file = LittleFS.open("/log.txt", FILE_READ);
-        server.sendHeader("Content-Disposition", "attachment; filename=onan_generator_log.txt");
-        server.streamFile(file, "text/plain");
-        file.close();
+    if (twai_driver_install(&g_config, &t_config, &f_config) == ESP_OK && twai_start() == ESP_OK) {
+        logMessage("Status: Transceiver Core Initialized (NORMAL MODE).\n");
+        xTaskCreate(twaiBackgroundEngine, "TWAI_Engine_Task", 4096, NULL, 3, &xTwaiTaskHandle);
     } else {
-        server.send(404, "text/plain", "Log is currently empty.");
+        Serial.println("Error: Critical Network Driver Fault!");
     }
-});
-
-// 2. Clear/Wipe log Route
-server.on("/clear-log", HTTP_POST, []() {
-    LittleFS.remove("/log.txt");
-    
-    if (logMutex != NULL && xSemaphoreTake(logMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-        webLogBuffer = ""; 
-        globalLogEntryCounter = 0; // <--- Resets your line numbering index back to 0
-        xSemaphoreGive(logMutex);
-    }
-    server.send(200, "text/plain", "OK");
-});
-
-// Endpoint to start the generator via webpage click
-server.on("/gen-start", HTTP_POST, []() {
-    sendGeneratorCommand(1); 
-    server.send(200, "text/plain", "START_SENT");
-});
-
-// Endpoint to stop the generator via webpage click
-server.on("/gen-stop", HTTP_POST, []() {
-    sendGeneratorCommand(2); 
-    server.send(200, "text/plain", "STOP_SENT");
-});
-
-// Endpoint to prime the fuel lift pump via webpage click
-server.on("/gen-prime", HTTP_POST, []() {
-    sendGeneratorCommand(3); 
-    server.send(200, "text/plain", "PRIME_SENT");
-});
-
-
-  server.begin();
-
-  // Initialize TWAI Subsystem Architecture
-  twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(CTX_PIN, CRX_PIN, TWAI_MODE_LISTEN_ONLY);
-  g_config.rx_queue_len = 64; 
-  twai_timing_config_t t_config = TWAI_TIMING_CONFIG_250KBITS();
-  twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
-
-  if (twai_driver_install(&g_config, &t_config, &f_config) == ESP_OK && twai_start() == ESP_OK) {
-    logMessage("Status: High-Priority CAN Core Instantiated.\n");
-    
-    xTaskCreate(
-      twaiBackgroundEngine,   
-      "TWAI_Reader_Task",     
-      3072,                   
-      NULL,                   
-      3,                      
-      &xTwaiTaskHandle        
-    );
-  } else {
-    Serial.println("Error: Critical Network Driver Fault!");
-  }
 }
-
 void loop() {
-  server.handleClient();
-  ArduinoOTA.handle();
-  
-  // --- Non-Blocking Dynamic Heartbeat Engine ---
-  unsigned long currentMillis = millis();
-  unsigned int flashInterval = 1000; // Default Idle Heartbeat rate (1 second)
+    server.handleClient();
+    ArduinoOTA.handle();
 
-  // If a data frame has arrived within the last 2000 milliseconds, ramp up the speed
-  if (currentMillis - lastDataReceivedTime < 2000) {
-    flashInterval = 150; // High-speed flash rate for active data monitoring
-  }
+    unsigned long currentMillis = millis();
+    unsigned int flashInterval = 1000;
 
-  // Toggle state window execution check
-  if (currentMillis - lastLedToggle >= flashInterval) {
-    lastLedToggle = currentMillis;
-    ledState = !ledState;
-    digitalWrite(STATUS_LED_PIN, ledState ? LOW : HIGH); 
-  }
-  
-  vTaskDelay(pdMS_TO_TICKS(2));
+    if (currentMillis - lastDataReceivedTime < 2000) {
+        flashInterval = 150; 
+    }
+
+    if (currentMillis - lastLedToggle >= flashInterval) {
+        lastLedToggle = currentMillis;
+        ledState = !ledState;
+        digitalWrite(STATUS_LED_PIN, ledState ? LOW : HIGH);
+    }
+    vTaskDelay(pdMS_TO_TICKS(2));
 }
 
+// Thread managing standard J1939 Reading alongside continuous 100ms Command Broadcasts
 void twaiBackgroundEngine(void *pvParameters) {
-  twai_message_t msg;
-  while (1) {
-    if (isUpdating) {
-      vTaskDelay(pdMS_TO_TICKS(100));
-      continue;
-    }
+    twai_message_t rx_msg;
+    twai_message_t tx_msg;
+    
+    // Constant parameters of our generated command transmissions
+    tx_msg.extd = 1;
+    tx_msg.rtr = 0;
+    tx_msg.data_length_code = 8;
+    tx_msg.identifier = 0x0CE0FF01; // Correct bitwise assembly for PGN 57599
+    
+    unsigned long lastTxTime = 0;
 
-    if (twai_receive(&msg, pdMS_TO_TICKS(15)) == ESP_OK) {
-      if (msg.extd) {
-        uint32_t pgn = (msg.identifier >> 8) & 0x3FFFF;
-        if (pgn == 65280) {
-          lastDataReceivedTime = millis(); // <--- Update timestamp here! LED data status
-          processHglcaNetworkFrame(msg);
+    while (1) {
+        if (isUpdating) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
         }
-      }
+
+        // --- CYCLIC TRANSMISSION LOOP (Runs every 100ms) ---
+        unsigned long now = millis();
+        if (now - lastTxTime >= 100) {
+            lastTxTime = now;
+            
+            // Re-apply required J1939 idle padding to trailing byte variables
+            for(int i = 1; i < 8; i++) { tx_msg.data[i] = 0xFF; }
+            
+            GenControlCommand activeCmd = currentActiveCommand;
+            tx_msg.data[0] = (uint8_t)activeCmd;
+
+            // Log out to console if a valid execution code is actively broadcasted
+            if (activeCmd != CMD_RELEASE) {
+                logMessage("📡 [REMOTE] Broadcasting J1939 Command Flag: 0x%02X\n", tx_msg.data[0]);
+            }
+
+            twai_transmit(&tx_msg, pdMS_TO_TICKS(5));
+        }
+
+        // --- NETWORK DATA RECEIVER ---
+        if (twai_receive(&rx_msg, pdMS_TO_TICKS(10)) == ESP_OK) {
+            if (rx_msg.extd) {
+                uint32_t pgn = (rx_msg.identifier >> 8) & 0x3FFFF;
+                if (pgn == 65280) { 
+                    lastDataReceivedTime = millis();
+                    processHglcaNetworkFrame(rx_msg);
+                }
+            }
+        }
+        
+        vTaskDelay(pdMS_TO_TICKS(5));
     }
-  }
 }
 
 void processHglcaNetworkFrame(twai_message_t msg) {
-    // 1. Isolate the operational status indicator from Byte 0
-    uint8_t engineState = msg.data[0]; 
+    uint8_t engineState = msg.data[0];
     static uint8_t lastEngineState = 0xFF;
 
     if (engineState != lastEngineState) {
         lastEngineState = engineState;
         logMessage("\n⚡ [GENSET STATE CHANGE] Status: ");
-        
         switch(engineState) {
-            case 0:  logMessage("Ready / Standby (AC Disconnected)\n"); break;
-            case 1:  logMessage("Stopped / Engine Inactive\n"); break;
-            case 2:  logMessage("Starting / Cranking Engine\n"); break;
-            case 3:  logMessage("Running / Producing AC Power\n"); break;
-            case 4:  logMessage("Warm-up Mode / Automatic Choke Active\n"); break;
-            case 5:  logMessage("FUEL PRIMING RUNNING (Lift Pump Engaged)\n"); break;
-            case 6:  logMessage("CRITICAL CRASH / FAULT SHUTDOWN TRIGGERED\n"); break;
+            case 0: logMessage("Ready / Standby (AC Disconnected)\n"); break;
+            case 1: logMessage("Stopped / Engine Inactive\n"); break;
+            case 2: logMessage("Starting / Cranking Engine\n"); break;
+            case 3: logMessage("Running / Producing AC Power\n"); break;
+            case 4: logMessage("Warm-up Mode / Automatic Choke Active\n"); break;
+            case 5: logMessage("FUEL PRIMING RUNNING (Lift Pump Engaged)\n"); break;
+            case 6: logMessage("CRITICAL CRASH / FAULT SHUTDOWN TRIGGERED\n"); break;
             case 15: logMessage("Internal Use Mode / Core Initializing\n"); break;
             default: logMessage("Unknown State (0x%02X)\n", engineState); break;
         }
+
+        // Drop the command button back to idle once the engine successfully satisfies the transition
+        if ((engineState == 3 && currentActiveCommand == CMD_START) ||
+            (engineState == 1 && currentActiveCommand == CMD_STOP)  ||
+            (engineState == 5 && currentActiveCommand == CMD_PRIME)) {
+            currentActiveCommand = CMD_RELEASE;
+            logMessage("✔ [REMOTE] Target state achieved. Command line released to idle.\n");
+        }
     }
 
-    // 2. Decode ASCII characters from Byte 2 into true diagnostic integers
     uint16_t activeFaultCode = 0;
     if (msg.data[2] >= 0x30 && msg.data[2] <= 0x39) {
-        activeFaultCode = msg.data[2] - 0x30; 
+        activeFaultCode = msg.data[2] - 0x30;
     } else {
-        activeFaultCode = msg.data[2]; 
+        activeFaultCode = msg.data[2];
     }
 
-    // 3. SECURE HARDWARE OVERRIDE (Translates raw stream layout prior to tracking)
     if (engineState == 6 && activeFaultCode == 0) {
-        activeFaultCode = 53; // Lock down Code 53 as the primary target parameter
+        activeFaultCode = 53; 
     }
 
     static uint16_t lastFaultCode = 0x0000;
     static uint8_t lastLoggedStateForMatrix = 0xFF;
 
-    // Filter out standard padding fields for standard running states
     if (engineState != 6 && (activeFaultCode == 0x00 || msg.data[2] == 0xFF)) {
         if (lastFaultCode != 0) {
             logMessage("\n✔ [DIAGNOSTIC] Faults Cleared. System Normal.\n");
             lastFaultCode = 0;
         }
         lastLoggedStateForMatrix = engineState;
-        return; 
+        return;
     }
 
-    // 4. Scan through the database table and print descriptions ONCE per occurrence
     if (activeFaultCode != lastFaultCode || engineState != lastLoggedStateForMatrix) {
         lastFaultCode = activeFaultCode;
         lastLoggedStateForMatrix = engineState;
-        
         logMessage("\n------------------------------------------------\n");
-        if (engineState == 6) {
-            logMessage("🚨 [CRASH MATRIX DUMP - FAULT ACTIVE]\n");
-        } else {
-            logMessage("⚠ [HGLCA INVERTER FAULT CODE ENCOUNTERED]\n");
-        }
+        if (engineState == 6) { logMessage("🚨 [CRASH MATRIX DUMP - FAULT ACTIVE]\n"); } 
+        else { logMessage("⚠ [HGLCA INVERTER FAULT CODE ENCOUNTERED]\n"); }
         
         logMessage("Raw Stream Payload Matrix: ");
-        for(int i = 0; i < 8; i++) {
-            logMessage("%02X ", msg.data[i]);
-        }
+        for(int i = 0; i < 8; i++) { logMessage("%02X ", msg.data[i]); }
         logMessage("\n");
 
         bool matchFound = false;
         for (int i = 0; i < ONAN_DB_COUNT; i++) {
             uint16_t tableFault = pgm_read_word(&(ONAN_FAULT_TABLE[i].faultNumber));
-            
             if (tableFault == activeFaultCode) {
                 const char* label = (const char*)pgm_read_ptr(&(ONAN_FAULT_TABLE[i].displayLabel));
                 logMessage("Factory Mapping Description: %s\n", label);
@@ -665,11 +430,7 @@ void processHglcaNetworkFrame(twai_message_t msg) {
                 break;
             }
         }
-
-        if (!matchFound) {
-            logMessage("Alert: Unmapped Inverter Code -> Code %d\n", activeFaultCode);
-        }
+        if (!matchFound) { logMessage("Alert: Unmapped Inverter Code -> Code %d\n", activeFaultCode); }
         logMessage("------------------------------------------------\n");
     }
 }
-//last up-

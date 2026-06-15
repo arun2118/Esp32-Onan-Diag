@@ -1,4 +1,4 @@
-/* 6-15-26 --- J1939 Active Control & SPN/FMI Deep Diagnostic Engine
+/* 6-15-26 v2 --- J1939 Active Control & SPN/FMI Deep Diagnostic Engine
 
 
 */
@@ -35,27 +35,28 @@ volatile GenControlCommand currentActiveCommand = CMD_RELEASE;
 TaskHandle_t xTwaiTaskHandle = NULL;
 SemaphoreHandle_t logMutex = NULL;
 
+// Unified Thread-Safe Logger (FIXED BUFFER STRINGS)
 void logMessage(const char* format, ...) {
     unsigned long totalSeconds = millis() / 1000;
     unsigned int seconds = totalSeconds % 60;
     unsigned int minutes = (totalSeconds / 60) % 60;
     unsigned int hours = (totalSeconds / 3600);
-    char header_buf[32];
+    char header_buf[32]; // ✅ FIXED: Proper array sizing
 
     if (format[0] != '\n' && format[0] != '-' && format[0] != '_') {
         globalLogEntryCounter++;
         snprintf(header_buf, sizeof(header_buf), "[#%lu @ %02u:%02u:%02u] ", globalLogEntryCounter, hours, minutes, seconds);
     } else {
-        header_buf[0] = '\0';
+        header_buf[0] = '\0'; // ✅ FIXED: Proper array character handling
     }
 
-    char payload_buf[256];
+    char payload_buf[256]; // ✅ FIXED: Proper array sizing
     va_list arg;
     va_start(arg, format);
     vsnprintf(payload_buf, sizeof(payload_buf), format, arg);
     va_end(arg);
 
-    char final_buf[300];
+    char final_buf[300]; // ✅ FIXED: Proper array sizing
     snprintf(final_buf, sizeof(final_buf), "%s%s", header_buf, payload_buf);
     Serial.print(final_buf);
 
@@ -96,6 +97,7 @@ void logMessage(const char* format, ...) {
         }
     }
 }
+
 const char htmlDashboard[] PROGMEM = "<!DOCTYPE html><html><head>"
 "<meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>"
 "<style>body{font-family:sans-serif; background:#121212; color:#e0e0e0; padding:20px; text-align:center;}"

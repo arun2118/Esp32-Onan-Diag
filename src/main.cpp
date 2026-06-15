@@ -1,6 +1,5 @@
 /* 
- 6-13-26  --- fix bin upload issue2
-
+ 6-15-26  --- new branch
 
 1. Open wifi setting on device and  connect to "Cummins_Live_Dashboard" with password "12345678"
 2. Open any browser go to address "192.168.4.1"

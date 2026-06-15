@@ -1,4 +1,4 @@
-/* 6-15-26 v2 --- J1939 Active Control & SPN/FMI Deep Diagnostic Engine
+/* 6-15-26 v3 --- J1939 Active Control & SPN/FMI Deep Diagnostic Engine
 
 
 */
@@ -299,7 +299,7 @@ void twaiBackgroundEngine(void *pvParameters) {
     tx_msg.extd = 1;
     tx_msg.rtr = 0;
     tx_msg.data_length_code = 8;
-    tx_msg.identifier = 0x0CE0FF01; 
+    tx_msg.identifier = 0x0CE0FF27; 
     
     unsigned long lastTxTime = 0;
 

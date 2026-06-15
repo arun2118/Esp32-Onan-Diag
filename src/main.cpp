@@ -1,7 +1,9 @@
-/* 6-15-26 --- New branch with Active Controller Loop
-   1. Open Wi-Fi settings on your device and connect to "Cummins_Live_Dashboard" (Password: 12345678)
-   2. Open any browser and navigate to "192.168.4.1" 
+/* 6-15-26 --- J1939 Active Control & SPN/FMI Deep Diagnostic Engine
+
+
 */
+
+
 #include <Arduino.h>
 #include "driver/twai.h"
 #include "esp_wifi.h"
@@ -18,26 +20,21 @@
 #define CRX_PIN GPIO_NUM_0
 #define STATUS_LED_PIN GPIO_NUM_8
 
-// Heartbeat tracking variables
 unsigned long lastLedToggle = 0;
 unsigned long lastDataReceivedTime = 0;
 bool ledState = false;
 
-// Global Variables
 String webLogBuffer = "";
 WebServer server(80);
 bool isUpdating = false;
 unsigned long globalLogEntryCounter = 0;
 
-// Dynamic Cyclic State Trackers for Remote Control
 enum GenControlCommand { CMD_RELEASE = 0, CMD_START = 1, CMD_STOP = 2, CMD_PRIME = 5 };
 volatile GenControlCommand currentActiveCommand = CMD_RELEASE;
 
-// FreeRTOS Synchronization Handles
 TaskHandle_t xTwaiTaskHandle = NULL;
 SemaphoreHandle_t logMutex = NULL;
 
-// Unified Thread-Safe Logger
 void logMessage(const char* format, ...) {
     unsigned long totalSeconds = millis() / 1000;
     unsigned int seconds = totalSeconds % 60;
@@ -99,7 +96,6 @@ void logMessage(const char* format, ...) {
         }
     }
 }
-// HTML layout defined in flash storage
 const char htmlDashboard[] PROGMEM = "<!DOCTYPE html><html><head>"
 "<meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>"
 "<style>body{font-family:sans-serif; background:#121212; color:#e0e0e0; padding:20px; text-align:center;}"
@@ -112,8 +108,8 @@ const char htmlDashboard[] PROGMEM = "<!DOCTYPE html><html><head>"
 ".btn-prime{background:#f0ad4e; color:#222;}.btn-prime:hover{background:#f0b95e;}.progress-container{width:100%; background-color:#2d2d2d; border-radius:4px; margin-top:15px; display:none; border:1px solid #444;}"
 ".progress-bar{width:0%; height:20px; background-color:#00adb5; border-radius:4px; text-align:center; line-height:20px; color:white; font-size:12px; transition: width 0.1s linear;}"
 "#status-msg{margin-top:10px; font-weight:bold; color:#ffb703;}</style></head><body>"
-"<h2>Cummins HGLCA Diagnostic Dashboard v1.6</h2>"
-"<div class='box'><h3>Live Telemetry Monitor</h3><pre id='terminal'>Connecting to telemetry engine...</pre>"
+"<h2>Cummins HGLCA Diagnostic Dashboard v1.7</h2>"
+"<div class='box'><h3>Live Telemetry & J1939 SPN/FMI Monitor</h3><pre id='terminal'>Awaiting connection to CAN powertrain loop...</pre>"
 "<a href='/download-log' download='onan_generator_log.txt' class='btn-action'>💾 Download Log (.txt)</a>"
 "<button onclick='clearSystemLog()' class='btn-action btn-clear'>🗑 Wipe Saved Log</button></div>"
 "<div class='box'><h3>⚡ Remote Powertrain Control Panel</h3>"
@@ -133,43 +129,44 @@ const char htmlDashboard[] PROGMEM = "<!DOCTYPE html><html><head>"
 "xhr.onload = function() { if(xhr.status === 200) { document.getElementById('status-msg').style.color = '#00ff00'; document.getElementById('status-msg').innerHTML = '✅ Update Success! Microcontroller is rebooting now...'; } else { document.getElementById('status-msg').style.color = '#ff0000'; document.getElementById('status-msg').innerText = '❌ Update Failed: ' + xhr.responseText; jsUpdating = false; } };"
 "xhr.onerror = function() { document.getElementById('status-msg').style.color = '#ff0000'; document.getElementById('status-msg').innerText = '❌ Connection lost during flash procedure.'; }; xhr.send(formData); }</script></body></html>";
 
-struct OnanFaultMapping { uint16_t faultNumber; const char* displayLabel; };
-const char f_msg_01[] PROGMEM = "Engine Temperature Exceeded Limit";
-const char f_msg_04[] PROGMEM = "Over Crank Fault";
-const char f_msg_06[] PROGMEM = "Low Oil Level / Pressure Failure";
-const char f_msg_12[] PROGMEM = "Over Voltage Control Circuit Shutdown";
-const char f_msg_13[] PROGMEM = "Under Voltage Power Generation Interruption";
-const char f_msg_14[] PROGMEM = "Over Frequency Operational Limit Exceeded";
-const char f_msg_15[] PROGMEM = "Under Frequency Operational Control Limit";
-const char f_msg_19[] PROGMEM = "Governor Actuator Configuration Sensor Fault";
-const char f_msg_22[] PROGMEM = "Governor Overload Engine Stalled Under Load";
-const char f_msg_27[] PROGMEM = "Voltage Capture Control Read Error";
-const char f_msg_29[] PROGMEM = "High Battery Voltage Warning Limit";
-const char f_msg_32[] PROGMEM = "Low Battery Charge State Cranking Warning";
-const char f_msg_35[] PROGMEM = "Microprocessor Control Core Memory Failure";
-const char f_msg_36[] PROGMEM = "Engine Uncommanded Shutdown Mechanical Stall";
-const char f_msg_37[] PROGMEM = "Invalid Inverter Configuration Core Readout";
-const char f_msg_38[] PROGMEM = "Field Overload Exciter Output Saturation";
-const char f_msg_41[] PROGMEM = "Inverter Rotor/Stator Signal Loss";
-const char f_msg_43[] PROGMEM = "Control Board Internal Temperature Trip";
-const char f_msg_45[] PROGMEM = "Speed Sense Core Frequency Sensor Missing";
-const char f_msg_47[] PROGMEM = "Ignition Circuit Timing Feedback Error";
-const char f_msg_48[] PROGMEM = "Generator Field Sense Return Interrupted";
-const char f_msg_52[] PROGMEM = "Fuel Injector Driver Circuit Open/Short";
-const char f_msg_53[] PROGMEM = "Oil Temperature Sensor Circuit Fault";
-const char f_msg_54[] PROGMEM = "Manifold Air Temperature (MAT) Sensor Fault";
-const char f_msg_56[] PROGMEM = "Manifold Absolute Pressure (MAP) Sensor Fault";
-const char f_msg_57[] PROGMEM = "Over Prime / Fuel Pressure Fault / Solenoid Error";
-const char f_msg_58[] PROGMEM = "Exhaust Gas Temperature Exhaust Limit Tripped";
-const char f_msg_73[] PROGMEM = "AC Output Circuit Overcurrent Fault";
+struct OnanFaultMapping { uint16_t faultNumber; uint32_t spn; uint8_t fmi; const char* displayLabel; };
+const char f_msg_01[] PROGMEM = "Engine Temperature Exceeded Limit"; //
+const char f_msg_04[] PROGMEM = "Over Crank Fault"; //
+const char f_msg_06[] PROGMEM = "Low Oil Level / Pressure Failure"; //
+const char f_msg_12[] PROGMEM = "Over Voltage Control Circuit Shutdown"; //
+const char f_msg_13[] PROGMEM = "Under Voltage Power Generation Interruption"; //
+const char f_msg_14[] PROGMEM = "Over Frequency Operational Limit Exceeded"; //
+const char f_msg_15[] PROGMEM = "Under Frequency Operational Control Limit"; //
+const char f_msg_19[] PROGMEM = "Governor Actuator Configuration Sensor Fault"; //
+const char f_msg_25[] PROGMEM = "Alternator Over Voltage Protection Trip"; //
+const char f_msg_26[] PROGMEM = "Alternator Under Voltage Power Loss"; //
+const char f_msg_27[] PROGMEM = "Voltage Capture Control PMA Read Error"; //
+const char f_msg_29[] PROGMEM = "High Battery Voltage Warning Limit"; //
+const char f_msg_31[] PROGMEM = "Engine Over Speed Mechanical Safety Cutout"; //
+const char f_msg_34[] PROGMEM = "Inverter Temperature Exceeded Limit"; //
+const char f_msg_36[] PROGMEM = "Abnormal Genset Uncommanded Shutdown"; //
+const char f_msg_38[] PROGMEM = "Field Overload Exciter Output Saturation"; //
+const char f_msg_43[] PROGMEM = "Control Board Internal ECU Memory Failure"; //
+const char f_msg_45[] PROGMEM = "Speed Sense Core Frequency Sensor Missing"; //
+const char f_msg_52[] PROGMEM = "Fuel Injector Driver/IPM Pump Circuit Fault"; //
+const char f_msg_53[] PROGMEM = "Oil Temperature Sensor Circuit Fault"; //
+const char f_msg_54[] PROGMEM = "Manifold Air Temperature (MAT) Sensor Fault"; //
+const char f_msg_57[] PROGMEM = "Over Prime / Fuel Pressure / LPG Valve Fault"; //
+const char f_msg_73[] PROGMEM = "AC Output Circuit Overcurrent Fault"; //
+const char f_msg_81[] PROGMEM = "Alternator Stator Circuit Phase Fault"; //
+const char f_msg_85[] PROGMEM = "Oxygen Sensor Circuit Open/Short Fault"; //
 
+// Advanced Lookup table linking Code to explicit J1939 diagnostic variables
 const OnanFaultMapping ONAN_FAULT_TABLE[] PROGMEM = {
-    {1, f_msg_01}, {4, f_msg_04}, {6, f_msg_06}, {12, f_msg_12}, {13, f_msg_13},
-    {14, f_msg_14}, {15, f_msg_15}, {19, f_msg_19}, {22, f_msg_22}, {27, f_msg_27},
-    {29, f_msg_29}, {32, f_msg_32}, {35, f_msg_35}, {36, f_msg_36}, {37, f_msg_37},
-    {38, f_msg_38}, {41, f_msg_41}, {43, f_msg_43}, {45, f_msg_45}, {47, f_msg_47},
-    {48, f_msg_48}, {52, f_msg_52}, {53, f_msg_53}, {54, f_msg_54}, {56, f_msg_56},
-    {57, f_msg_57}, {58, f_msg_58}, {73, f_msg_73}
+    {1,  110,  0, f_msg_01}, {4,  1213, 7, f_msg_04}, {6,  98,   1, f_msg_06},
+    {12, 1795, 0, f_msg_12}, {13, 1795, 1, f_msg_13}, {14, 1797, 0, f_msg_14},
+    {15, 1797, 1, f_msg_15}, {19, 1479, 7, f_msg_19}, {25, 1796, 0, f_msg_25},
+    {26, 1796, 1, f_msg_26}, {27, 4220, 2, f_msg_27}, {29, 168,  0, f_msg_29},
+    {31, 190,  0, f_msg_31}, {34, 1798, 0, f_msg_34}, {36, 1213, 3, f_msg_36},
+    {38, 1799, 0, f_msg_38}, {43, 611, 12, f_msg_43}, {45, 723,  2, f_msg_45},
+    {52, 1268, 7, f_msg_52}, {53, 175,  2, f_msg_53}, {54, 105,  2, f_msg_54},
+    {57, 1213, 5, f_msg_57}, {73, 1795, 6, f_msg_73}, {81, 4221, 7, f_msg_81},
+    {85, 3216, 2, f_msg_85}
 };
 const int ONAN_DB_COUNT = sizeof(ONAN_FAULT_TABLE) / sizeof(ONAN_FAULT_TABLE[0]);
 
@@ -188,7 +185,7 @@ void setup() {
     pinMode(STATUS_LED_PIN, OUTPUT);
     logMutex = xSemaphoreCreateMutex();
     logMessage("=============================================\n");
-    logMessage(" Cummins J1939 Active TX/RX Loop Engaged    \n");
+    logMessage(" Cummins Diagnostic & Control System Booted   \n");
     logMessage("=============================================\n");
 
     esp_bt_controller_disable();
@@ -205,12 +202,7 @@ void setup() {
         Serial.println("VS Code OTA Flash Initiated...");
     });
     ArduinoOTA.onEnd([]() { Serial.println("\nVS Code OTA Complete. Rebooting..."); });
-    ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) { Serial.printf("Progress: %u%%\r", (progress / (total / 100))); });
-    ArduinoOTA.onError([](ota_error_t error) { Serial.printf("Error[%u]: ", error); isUpdating = false; });
     ArduinoOTA.begin();
-
-    logMessage("Hotspot: Cummins_Live_Dashboard\n");
-    logMessage("URL: http://%s\n", WiFi.softAPIP().toString().c_str());
 
     server.on("/", HTTP_GET, []() { server.send(200, "text/html", htmlDashboard); });
     
@@ -235,15 +227,13 @@ void setup() {
             vTaskDelay(pdMS_TO_TICKS(50));
             twai_stop();
             twai_driver_uninstall();
-            Serial.printf("Flashing Firmware Image: %s\n", upload.filename.c_str());
             if (!Update.begin(UPDATE_SIZE_UNKNOWN)) { Update.printError(Serial); }
         } else if (upload.status == UPLOAD_FILE_WRITE) {
             yield();
             if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) { Update.printError(Serial); }
             yield();
         } else if (upload.status == UPLOAD_FILE_END) {
-            if (Update.end(true)) { Serial.printf("Flash Process Finalized: %u bytes written.\n", upload.totalSize); }
-            else { Update.printError(Serial); }
+            Update.end(true);
         }
     });
 
@@ -253,7 +243,7 @@ void setup() {
             server.sendHeader("Content-Disposition", "attachment; filename=onan_generator_log.txt");
             server.streamFile(file, "text/plain");
             file.close();
-        } else { server.send(404, "text/plain", "Log is currently empty."); }
+        } else { server.send(404, "text/plain", "Log is empty."); }
     });
 
     server.on("/clear-log", HTTP_POST, []() {
@@ -265,14 +255,11 @@ void setup() {
         server.send(200, "text/plain", "OK");
     });
 
-    // Modified Endpoints updating the shared volatile command flag
     server.on("/gen-start", HTTP_POST, []() { currentActiveCommand = CMD_START; server.send(200, "text/plain", "START_PENDING"); });
     server.on("/gen-stop", HTTP_POST, []() { currentActiveCommand = CMD_STOP; server.send(200, "text/plain", "STOP_PENDING"); });
     server.on("/gen-prime", HTTP_POST, []() { currentActiveCommand = CMD_PRIME; server.send(200, "text/plain", "PRIME_PENDING"); });
 
-    server.begin();
-
-    // FIXED: Switched driver mode from TWAI_MODE_LISTEN_ONLY to TWAI_MODE_NORMAL
+    // Active controller requires normal driver loop to allow frame writing
     twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(CTX_PIN, CRX_PIN, TWAI_MODE_NORMAL);
     g_config.rx_queue_len = 64;
     twai_timing_config_t t_config = TWAI_TIMING_CONFIG_250KBITS();
@@ -284,6 +271,7 @@ void setup() {
     } else {
         Serial.println("Error: Critical Network Driver Fault!");
     }
+    server.begin();
 }
 void loop() {
     server.handleClient();
@@ -292,9 +280,7 @@ void loop() {
     unsigned long currentMillis = millis();
     unsigned int flashInterval = 1000;
 
-    if (currentMillis - lastDataReceivedTime < 2000) {
-        flashInterval = 150; 
-    }
+    if (currentMillis - lastDataReceivedTime < 2000) { flashInterval = 150; }
 
     if (currentMillis - lastLedToggle >= flashInterval) {
         lastLedToggle = currentMillis;
@@ -304,45 +290,34 @@ void loop() {
     vTaskDelay(pdMS_TO_TICKS(2));
 }
 
-// Thread managing standard J1939 Reading alongside continuous 100ms Command Broadcasts
 void twaiBackgroundEngine(void *pvParameters) {
     twai_message_t rx_msg;
     twai_message_t tx_msg;
     
-    // Constant parameters of our generated command transmissions
     tx_msg.extd = 1;
     tx_msg.rtr = 0;
     tx_msg.data_length_code = 8;
-    tx_msg.identifier = 0x0CE0FF01; // Correct bitwise assembly for PGN 57599
+    tx_msg.identifier = 0x0CE0FF01; 
     
     unsigned long lastTxTime = 0;
 
     while (1) {
-        if (isUpdating) {
-            vTaskDelay(pdMS_TO_TICKS(100));
-            continue;
-        }
+        if (isUpdating) { vTaskDelay(pdMS_TO_TICKS(100)); continue; }
 
-        // --- CYCLIC TRANSMISSION LOOP (Runs every 100ms) ---
         unsigned long now = millis();
         if (now - lastTxTime >= 100) {
             lastTxTime = now;
-            
-            // Re-apply required J1939 idle padding to trailing byte variables
             for(int i = 1; i < 8; i++) { tx_msg.data[i] = 0xFF; }
             
             GenControlCommand activeCmd = currentActiveCommand;
             tx_msg.data[0] = (uint8_t)activeCmd;
 
-            // Log out to console if a valid execution code is actively broadcasted
             if (activeCmd != CMD_RELEASE) {
                 logMessage("📡 [REMOTE] Broadcasting J1939 Command Flag: 0x%02X\n", tx_msg.data[0]);
             }
-
             twai_transmit(&tx_msg, pdMS_TO_TICKS(5));
         }
 
-        // --- NETWORK DATA RECEIVER ---
         if (twai_receive(&rx_msg, pdMS_TO_TICKS(10)) == ESP_OK) {
             if (rx_msg.extd) {
                 uint32_t pgn = (rx_msg.identifier >> 8) & 0x3FFFF;
@@ -352,7 +327,6 @@ void twaiBackgroundEngine(void *pvParameters) {
                 }
             }
         }
-        
         vTaskDelay(pdMS_TO_TICKS(5));
     }
 }
@@ -376,7 +350,6 @@ void processHglcaNetworkFrame(twai_message_t msg) {
             default: logMessage("Unknown State (0x%02X)\n", engineState); break;
         }
 
-        // Drop the command button back to idle once the engine successfully satisfies the transition
         if ((engineState == 3 && currentActiveCommand == CMD_START) ||
             (engineState == 1 && currentActiveCommand == CMD_STOP)  ||
             (engineState == 5 && currentActiveCommand == CMD_PRIME)) {
@@ -386,15 +359,10 @@ void processHglcaNetworkFrame(twai_message_t msg) {
     }
 
     uint16_t activeFaultCode = 0;
-    if (msg.data[2] >= 0x30 && msg.data[2] <= 0x39) {
-        activeFaultCode = msg.data[2] - 0x30;
-    } else {
-        activeFaultCode = msg.data[2];
-    }
+    if (msg.data[2] >= 0x30 && msg.data[2] <= 0x39) { activeFaultCode = msg.data[2] - 0x30; } 
+    else { activeFaultCode = msg.data[2]; }
 
-    if (engineState == 6 && activeFaultCode == 0) {
-        activeFaultCode = 53; 
-    }
+    if (engineState == 6 && activeFaultCode == 0) { activeFaultCode = 53; }
 
     static uint16_t lastFaultCode = 0x0000;
     static uint8_t lastLoggedStateForMatrix = 0xFF;
@@ -423,9 +391,13 @@ void processHglcaNetworkFrame(twai_message_t msg) {
         for (int i = 0; i < ONAN_DB_COUNT; i++) {
             uint16_t tableFault = pgm_read_word(&(ONAN_FAULT_TABLE[i].faultNumber));
             if (tableFault == activeFaultCode) {
+                uint32_t diagnosticSpn = pgm_read_dword(&(ONAN_FAULT_TABLE[i].spn));
+                uint8_t diagnosticFmi = pgm_read_byte(&(ONAN_FAULT_TABLE[i].fmi));
                 const char* label = (const char*)pgm_read_ptr(&(ONAN_FAULT_TABLE[i].displayLabel));
-                logMessage("Factory Mapping Description: %s\n", label);
-                logMessage("Manual Reference Integer : Code %d\n", activeFaultCode);
+                
+                logMessage("Manual Reference: Code %d\n", activeFaultCode); //
+                logMessage("J1939 Mapping   : SPN %lu, FMI %d\n", diagnosticSpn, diagnosticFmi);
+                logMessage("Description     : %s\n", label);
                 matchFound = true;
                 break;
             }

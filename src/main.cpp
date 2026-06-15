@@ -1,5 +1,5 @@
 /* 
- 6-13-26  --- fix bin upload issue
+ 6-13-26  --- fix bin upload issue2
 
 
 1. Open wifi setting on device and  connect to "Cummins_Live_Dashboard" with password "12345678"

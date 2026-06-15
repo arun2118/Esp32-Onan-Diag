@@ -168,3 +168,43 @@ The tracking header prepends an incremental line counter alongside system uptime
 [#4 @ 00:01:48] ⚡ [GENSET STATE CHANGE] Status: Warm-up Mode / Automatic Choke Active
 [#5 @ 00:01:54] ⚡ [GENSET STATE CHANGE] Status: Running / Producing AC Power
 ```
+## 🧠 ESP32-C3 Memory & Partition Mapping
+
+The system utilizes a custom partition scheme optimized for **4MB (4194304 bytes)** of physical flash memory. It balances large dual application slots for safe **Over-The-Air (OTA) updates** with a dedicated flash file system partition for system logging.
+
+### 📊 Partition Layout Overview
+
+| Partition Name | Type | SubType | Offset Address | Size (Hex) | Size (Decimal) | Purpose |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **`nvs`** | data | nvs | `0x9000` | `0x5000` | 20 KB | Non-Volatile Storage (WiFi credentials, system variables) |
+| **`otadata`** | data | ota | `0xe000` | `0x2000` | 8 KB | OTA Rollback control register & boot slot indicator |
+| **`app0`** | app | ota_0 | `0x10000` | `0x1C0000` | 1,792 KB (1.75 MB) | Active Factory/Primary Firmware Execution Slot |
+| **`app1`** | app | ota_1 | `0x1D0000` | `0x1C0000` | 1,792 KB (1.75 MB) | Passive Target Firmware Storage Slot for OTA updates |
+| **`spiffs`** | data | spiffs | `0x390000` | `0x60000` | 384 KB | **LittleFS File System** for storing active generator logs (`log.txt`) |
+
+### 🛠️ Visual Flash Memory Allocation
+
+```text
+[nvs/ota] [==== app0 (Active App) ====] [==== app1 (OTA Target) ====] [LittleFS Log]
+ (28 KB)           (1,792 KB)                     (1,792 KB)             (384 KB)
+
+|------------------------------------ Total: 4,000 KB (~4.0 MB) ----------------------|
+```
+
+### 🔒 Safety and OTA Headroom Analysis
+
+* **Zero Size Risks**: A standard diagnostic powertrain application of this scale compiles to roughly **850 KB - 950 KB**. 
+* **Dual-Slot Matrix**: Because both `app0` and `app1` are isolated into identical 1.75 MB containers, the new binary can download fully into the passive slot before the ESP32-C3 reboots and validates the flash.
+* **Storage Buffer Guard**: If an OTA stream fails midway through transmission, the active slot remains untouched and functional.
+
+### ⚙️ Implementation Files
+
+#### `partitions.csv`
+```csv
+# Name,   Type, SubType, Offset,   Size,     Flags
+nvs,      data, nvs,     0x9000,   0x5000,
+otadata,  data, ota,     0xe000,   0x2000,
+app0,     app,  ota_0,   0x10000,  0x1C0000,
+app1,     app,  ota_1,   0x1D0000, 0x1C0000,
+spiffs,   data, spiffs,  0x390000, 0x60000,
+```

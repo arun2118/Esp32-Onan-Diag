@@ -2,7 +2,6 @@
 
 */
 
-
 #include <Arduino.h>
 #include "driver/twai.h"
 #include "esp_wifi.h"
@@ -13,7 +12,6 @@
 #include <stdarg.h>
 #include <ArduinoOTA.h>
 #include <LittleFS.h>
-#include <esp_task_wdt.h>
 
 #define CTX_PIN GPIO_NUM_1
 #define CRX_PIN GPIO_NUM_0
@@ -31,31 +29,38 @@ unsigned long globalLogEntryCounter = 0;
 enum GenControlCommand { CMD_RELEASE = 0, CMD_START = 1, CMD_STOP = 2, CMD_PRIME = 5 };
 volatile GenControlCommand currentActiveCommand = CMD_RELEASE;
 
+// --- Live Powertrain Metrics Buffers ---
+volatile float liveBatteryVoltage = 0.0;
+volatile uint16_t liveEngineRPM = 0;
+volatile int16_t liveInverterTemp = 0;
+volatile float liveACFrequency = 0.0;
+volatile uint16_t liveACVoltage = 0;
+volatile uint8_t globalGensetState = 1; 
+
 TaskHandle_t xTwaiTaskHandle = NULL;
 SemaphoreHandle_t logMutex = NULL;
 
-// Unified Thread-Safe Logger (FIXED BUFFER STRINGS)
 void logMessage(const char* format, ...) {
     unsigned long totalSeconds = millis() / 1000;
     unsigned int seconds = totalSeconds % 60;
     unsigned int minutes = (totalSeconds / 60) % 60;
     unsigned int hours = (totalSeconds / 3600);
-    char header_buf[32]; // ✅ FIXED: Proper array sizing
+    char header_buf[32];
 
     if (format[0] != '\n' && format[0] != '-' && format[0] != '_') {
         globalLogEntryCounter++;
         snprintf(header_buf, sizeof(header_buf), "[#%lu @ %02u:%02u:%02u] ", globalLogEntryCounter, hours, minutes, seconds);
     } else {
-        header_buf[0] = '\0'; // ✅ FIXED: Proper array character handling
+        header_buf[0] = '\0';
     }
 
-    char payload_buf[256]; // ✅ FIXED: Proper array sizing
+    char payload_buf[256];
     va_list arg;
     va_start(arg, format);
     vsnprintf(payload_buf, sizeof(payload_buf), format, arg);
     va_end(arg);
 
-    char final_buf[300]; // ✅ FIXED: Proper array sizing
+    char final_buf[300];
     snprintf(final_buf, sizeof(final_buf), "%s%s", header_buf, payload_buf);
     Serial.print(final_buf);
 
@@ -68,212 +73,139 @@ void logMessage(const char* format, ...) {
     }
 
     File logFile = LittleFS.open("/log.txt", FILE_APPEND);
-    if (logFile) {
-        logFile.print(final_buf);
-        logFile.close();
-    }
-
-    static unsigned long lastSizeCheck = 0;
-    if (millis() - lastSizeCheck > 30000) {
-        lastSizeCheck = millis();
-        File checkFile = LittleFS.open("/log.txt", FILE_READ);
-        if (checkFile) {
-            size_t fileSize = checkFile.size();
-            checkFile.close();
-            if (fileSize > 50000) {
-                File readFile = LittleFS.open("/log.txt", FILE_READ);
-                if (readFile) {
-                    readFile.seek(fileSize - 20000);
-                    String truncatedData = readFile.readString();
-                    readFile.close();
-                    File writeFile = LittleFS.open("/log.txt", FILE_WRITE);
-                    if (writeFile) {
-                        writeFile.print(truncatedData);
-                        writeFile.close();
-                    }
-                }
-            }
-        }
-    }
+    if (logFile) { logFile.print(final_buf); logFile.close(); }
 }
 
-const char htmlDashboard[] PROGMEM = "<!DOCTYPE html><html><head>"
-"<meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>"
-"<style>body{font-family:sans-serif; background:#121212; color:#e0e0e0; padding:20px; text-align:center;}"
-"h2, h3{color:#00adb5;} .box{background:#1e1e1e; padding:15px; border-radius:8px; margin: 0 auto 20px auto; max-width:700px; border:1px solid #333;}"
-"pre{background:#000; color:#0f0; padding:15px; border-radius:5px; overflow-y:scroll; height:400px; font-family:monospace; text-align:left; white-space:pre-wrap; margin-bottom:15px;}"
-"input[type=file]{background:#2d2d2d; padding:8px; border-radius:4px; color:#fff; border:1px solid #444; margin-right:10px;}"
-"input[type=button], .btn-action{background:#00adb5; color:#fff; border:none; padding:10px 20px; border-radius:4px; cursor:pointer; font-weight:bold; font-size:14px; text-decoration:none; display:inline-block; margin:5px;}"
-"input[type=button]:hover, .btn-action:hover{background:#01c3cc;}.btn-clear{background:#3d3d3d;}.btn-clear:hover{background:#4d4d4d;}"
-".btn-start{background:#5cb85c;}.btn-start:hover{background:#4cae4c;}.btn-stop{background:#d9534f;}.btn-stop:hover{background:#c9302c;}"
-".btn-prime{background:#f0ad4e; color:#222;}.btn-prime:hover{background:#f0b95e;}.progress-container{width:100%; background-color:#2d2d2d; border-radius:4px; margin-top:15px; display:none; border:1px solid #444;}"
-".progress-bar{width:0%; height:20px; background-color:#00adb5; border-radius:4px; text-align:center; line-height:20px; color:white; font-size:12px; transition: width 0.1s linear;}"
-"#status-msg{margin-top:10px; font-weight:bold; color:#ffb703;}</style></head><body>"
-"<h2>Cummins HGLCA Diagnostic Dashboard v1.7</h2>"
-"<div class='box'><h3>Live Telemetry & J1939 SPN/FMI Monitor</h3><pre id='terminal'>Awaiting connection to CAN powertrain loop...</pre>"
-"<a href='/download-log' download='onan_generator_log.txt' class='btn-action'>💾 Download Log (.txt)</a>"
-"<button onclick='clearSystemLog()' class='btn-action btn-clear'>🗑 Wipe Saved Log</button></div>"
-"<div class='box'><h3>⚡ Remote Powertrain Control Panel</h3>"
-"<button onclick='controlGenerator(\"/gen-prime\")' class='btn-action btn-prime'>💽 Prime Fuel System</button>"
-"<button onclick='controlGenerator(\"/gen-start\")' class='btn-action btn-start'>🚀 Crank Engine / Start</button>"
-"<button onclick='controlGenerator(\"/gen-stop\")' class='btn-action btn-stop'>🛑 Kill Engine / Stop</button></div>"
-"<div class='box'><h3>Wireless Firmware Management</h3><form id='upload-form' enctype='multipart/form-data'>"
-"<input type='file' id='file-input' name='update' accept='.bin' required>"
-"<input type='button' value='Upload New Code (.bin)' onclick='uploadFile()'></form>"
-"<div class='progress-container' id='prg-wrapper'><div class='progress-bar' id='prg-bar'>0%</div></div><div id='status-msg'></div></div>"
-"<script>var term = document.getElementById('terminal'); var jsUpdating = false;"
-"function pollTelemetry() { if(jsUpdating) return; fetch('/telemetry').then(response => response.text()).then(text => { if(text.trim() !== '') { term.innerHTML = text; term.scrollTop = term.scrollHeight; } }).catch(() => { term.innerHTML = '<br><span style=\"color:red;\">[Network Polling Offline - Resetting...]</span>'; }); }"
-"var intervalId = setInterval(pollTelemetry, 500); function controlGenerator(urlRoute) { fetch(urlRoute, {method: 'POST'}); }"
-"function clearSystemLog() { if(confirm('Are you sure you want to permanently erase the flash log history?')) { fetch('/clear-log', {method: 'POST'}).then(res => { if(res.ok) { alert('Log successfully cleared from flash memory!'); term.innerHTML = ''; } }); } }"
-"function uploadFile() { var fileInput = document.getElementById('file-input'); if(fileInput.files.length === 0) { alert('Please select a .bin file first!'); return; } jsUpdating = true; var fileBlob = fileInput.files[0]; var formData = new FormData(); formData.append('update', fileBlob); var xhr = new XMLHttpRequest(); xhr.open('POST', '/update', true); document.getElementById('prg-wrapper').style.display = 'block'; document.getElementById('status-msg').innerText = 'Uploading firmware payload...';"
-"xhr.upload.addEventListener('progress', function(e) { if(e.lengthComputable) { var percent = Math.round((e.loaded / e.total) * 100); document.getElementById('prg-bar').style.width = percent + '%'; document.getElementById('prg-bar').innerText = percent + '%'; if(percent === 100) { document.getElementById('status-msg').innerText = 'Writing flash memory... Please wait.'; } } });"
-"xhr.onload = function() { if(xhr.status === 200) { document.getElementById('status-msg').style.color = '#00ff00'; document.getElementById('status-msg').innerHTML = '✅ Update Success! Microcontroller is rebooting now...'; } else { document.getElementById('status-msg').style.color = '#ff0000'; document.getElementById('status-msg').innerText = '❌ Update Failed: ' + xhr.responseText; jsUpdating = false; } };"
-"xhr.onerror = function() { document.getElementById('status-msg').style.color = '#ff0000'; document.getElementById('status-msg').innerText = '❌ Connection lost during flash procedure.'; }; xhr.send(formData); }</script></body></html>";
-
+// Master Diagnostic Matrix mappings
 struct OnanFaultMapping { uint16_t faultNumber; uint32_t spn; uint8_t fmi; const char* displayLabel; };
-const char f_msg_01[] PROGMEM = "Engine Temperature Exceeded Limit"; //
-const char f_msg_04[] PROGMEM = "Over Crank Fault"; //
-const char f_msg_06[] PROGMEM = "Low Oil Level / Pressure Failure"; //
-const char f_msg_12[] PROGMEM = "Over Voltage Control Circuit Shutdown"; //
-const char f_msg_13[] PROGMEM = "Under Voltage Power Generation Interruption"; //
-const char f_msg_14[] PROGMEM = "Over Frequency Operational Limit Exceeded"; //
-const char f_msg_15[] PROGMEM = "Under Frequency Operational Control Limit"; //
-const char f_msg_19[] PROGMEM = "Governor Actuator Configuration Sensor Fault"; //
-const char f_msg_25[] PROGMEM = "Alternator Over Voltage Protection Trip"; //
-const char f_msg_26[] PROGMEM = "Alternator Under Voltage Power Loss"; //
-const char f_msg_27[] PROGMEM = "Voltage Capture Control PMA Read Error"; //
-const char f_msg_29[] PROGMEM = "High Battery Voltage Warning Limit"; //
-const char f_msg_31[] PROGMEM = "Engine Over Speed Mechanical Safety Cutout"; //
-const char f_msg_34[] PROGMEM = "Inverter Temperature Exceeded Limit"; //
-const char f_msg_36[] PROGMEM = "Abnormal Genset Uncommanded Shutdown"; //
-const char f_msg_38[] PROGMEM = "Field Overload Exciter Output Saturation"; //
-const char f_msg_43[] PROGMEM = "Control Board Internal ECU Memory Failure"; //
-const char f_msg_45[] PROGMEM = "Speed Sense Core Frequency Sensor Missing"; //
-const char f_msg_52[] PROGMEM = "Fuel Injector Driver/IPM Pump Circuit Fault"; //
-const char f_msg_53[] PROGMEM = "Oil Temperature Sensor Circuit Fault"; //
-const char f_msg_54[] PROGMEM = "Manifold Air Temperature (MAT) Sensor Fault"; //
-const char f_msg_57[] PROGMEM = "Over Prime / Fuel Pressure / LPG Valve Fault"; //
-const char f_msg_73[] PROGMEM = "AC Output Circuit Overcurrent Fault"; //
-const char f_msg_81[] PROGMEM = "Alternator Stator Circuit Phase Fault"; //
-const char f_msg_85[] PROGMEM = "Oxygen Sensor Circuit Open/Short Fault"; //
+const char f_msg_01[] PROGMEM = "Engine Temperature Exceeded Limit";
+const char f_msg_04[] PROGMEM = "Over Crank Fault";
+const char f_msg_06[] PROGMEM = "Low Oil Level / Pressure Failure";
+const char f_msg_12[] PROGMEM = "Over Voltage Control Circuit Shutdown";
+const char f_msg_13[] PROGMEM = "Under Voltage Power Generation Interruption";
+const char f_msg_14[] PROGMEM = "Over Frequency Operational Limit Exceeded";
+const char f_msg_15[] PROGMEM = "Under Frequency Operational Control Limit";
+const char f_msg_19[] PROGMEM = "Governor Actuator Configuration Sensor Fault";
+const char f_msg_27[] PROGMEM = "Voltage Capture Control PMA Read Error";
+const char f_msg_29[] PROGMEM = "High Battery Voltage Warning Limit";
+const char f_msg_31[] PROGMEM = "Engine Over Speed Mechanical Safety Cutout";
+const char f_msg_34[] PROGMEM = "Inverter Temperature Exceeded Limit";
+const char f_msg_36[] PROGMEM = "Abnormal Genset Uncommanded Shutdown";
+const char f_msg_38[] PROGMEM = "Field Overload Exciter Output Saturation";
+const char f_msg_43[] PROGMEM = "Control Board Internal ECU Memory Failure";
+const char f_msg_57[] PROGMEM = "Over Prime / Fuel Pressure / LPG Valve Fault";
+const char f_msg_73[] PROGMEM = "AC Output Circuit Overcurrent Fault";
 
-// Advanced Lookup table linking Code to explicit J1939 diagnostic variables
 const OnanFaultMapping ONAN_FAULT_TABLE[] PROGMEM = {
-    {1,  110,  0, f_msg_01}, {4,  1213, 7, f_msg_04}, {6,  98,   1, f_msg_06},
+    {1, 110, 0, f_msg_01}, {4, 1213, 7, f_msg_04}, {6, 98, 1, f_msg_06},
     {12, 1795, 0, f_msg_12}, {13, 1795, 1, f_msg_13}, {14, 1797, 0, f_msg_14},
-    {15, 1797, 1, f_msg_15}, {19, 1479, 7, f_msg_19}, {25, 1796, 0, f_msg_25},
-    {26, 1796, 1, f_msg_26}, {27, 4220, 2, f_msg_27}, {29, 168,  0, f_msg_29},
-    {31, 190,  0, f_msg_31}, {34, 1798, 0, f_msg_34}, {36, 1213, 3, f_msg_36},
-    {38, 1799, 0, f_msg_38}, {43, 611, 12, f_msg_43}, {45, 723,  2, f_msg_45},
-    {52, 1268, 7, f_msg_52}, {53, 175,  2, f_msg_53}, {54, 105,  2, f_msg_54},
-    {57, 1213, 5, f_msg_57}, {73, 1795, 6, f_msg_73}, {81, 4221, 7, f_msg_81},
-    {85, 3216, 2, f_msg_85}
+    {15, 1797, 1, f_msg_15}, {19, 1479, 7, f_msg_19}, {27, 4220, 2, f_msg_27},
+    {29, 168, 0, f_msg_29}, {31, 190, 0, f_msg_31}, {34, 1798, 0, f_msg_34},
+    {36, 1213, 3, f_msg_36}, {38, 1799, 0, f_msg_38}, {43, 611, 12, f_msg_43},
+    {57, 1213, 5, f_msg_57}, {73, 1795, 6, f_msg_73}
 };
 const int ONAN_DB_COUNT = sizeof(ONAN_FAULT_TABLE) / sizeof(ONAN_FAULT_TABLE[0]);
 
 void processHglcaNetworkFrame(twai_message_t msg);
 void twaiBackgroundEngine(void *pvParameters);
+// HTML UI with responsive gauge elements and unified parsing strings
+const char htmlDashboard[] PROGMEM = "<!DOCTYPE html><html><head>"
+"<meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>"
+"<style>body{font-family:sans-serif; background:#121212; color:#e0e0e0; padding:15px; text-align:center;}"
+"h2, h3{color:#00adb5; margin:10px 0;} .box{background:#1e1e1e; padding:15px; border-radius:8px; margin:0 auto 15px auto; max-width:750px; border:1px solid #333;}"
+".grid{display:flex; flex-wrap:wrap; gap:10px; justify-content:center; max-width:750px; margin:0 auto 15px auto;}"
+".metric-card{background:#1e1e1e; border:1px solid #333; border-radius:6px; padding:12px; width:130px; text-align:center; box-sizing:border-box;}"
+".val{font-size:20px; font-weight:bold; color:#00adb5; margin-top:5px;}"
+"pre{background:#000; color:#0f0; padding:12px; border-radius:5px; overflow-y:scroll; height:250px; font-family:monospace; text-align:left; white-space:pre-wrap; margin-bottom:10px;}"
+"input[type=file]{background:#2d2d2d; padding:6px; border-radius:4px; color:#fff; border:1px solid #444;}"
+"input[type=button], .btn-action{background:#00adb5; color:#fff; border:none; padding:10px 15px; border-radius:4px; cursor:pointer; font-weight:bold; text-decoration:none; display:inline-block; margin:4px;}"
+".btn-clear{background:#3d3d3d;}.btn-start{background:#5cb85c;}.btn-stop{background:#d9534f;}.btn-prime{background:#f0ad4e; color:#222;}"
+".progress-container{width:100%; background-color:#2d2d2d; border-radius:4px; margin-top:10px; display:none;}"
+".progress-bar{width:0%; height:18px; background-color:#00adb5; border-radius:4px; text-align:center; line-height:18px; color:white; font-size:11px;}"
+"#status-msg{margin-top:8px; font-weight:bold; color:#ffb703;}</style></head><body>"
+"<h2>Cummins HGLCA Pro Diagnostic System</h2>"
+"<div class='grid'>"
+" <div class='metric-card'><div>🔋 Battery</div><div class='val' id='m-volts'>0.0V</div></div>"
+" <div class='metric-card'><div>⚙️ Engine</div><div class='val' id='m-rpm'>0 RPM</div></div>"
+" <div class='metric-card'><div>🔥 Inverter</div><div class='val' id='m-temp'>0&deg;C</div></div>"
+" <div class='metric-card'><div>⚡ AC Power</div><div class='val' id='m-acv'>0V</div></div>"
+" <div class='metric-card'><div>🌀 Frequency</div><div class='val' id='m-hz'>0.0Hz</div></div>"
+"</div>"
+"<div class='box'><h3>Live System Console Logs</h3><pre id='terminal'>Awaiting telemetry synchronization...</pre>"
+"<a href='/download-log' download='onan_generator_log.txt' class='btn-action'>💾 Download Log</a>"
+"<button onclick='clearSystemLog()' class='btn-action btn-clear'>🗑 Wipe Saved Log</button></div>"
+"<div class='box'><h3>⚡ Remote Powertrain Control Panel</h3>"
+"<button onclick='controlGenerator(\"/gen-prime\")' class='btn-action btn-prime'>💽 Prime Fuel</button>"
+"<button onclick='controlGenerator(\"/gen-start\")' class='btn-action btn-start'>🚀 Crank Start</button>"
+"<button onclick='controlGenerator(\"/gen-stop\")' class='btn-action btn-stop'>🛑 Kill Engine</button></div>"
+"<div class='box'><h3>Wireless Firmware Management</h3><form id='upload-form' enctype='multipart/form-data'>"
+"<input type='file' id='file-input' name='update' accept='.bin' required> "
+"<input type='button' value='Flash Payload (.bin)' onclick='uploadFile()'></form>"
+"<div class='progress-container' id='prg-wrapper'><div class='progress-bar' id='prg-bar'>0%</div></div><div id='status-msg'></div></div>"
+"<script>var term = document.getElementById('terminal'); var jsUpdating = false;"
+"function pollTelemetry() { if(jsUpdating) return;"
+" fetch('/telemetry-json').then(r => r.json()).then(data => {"
+" document.getElementById('m-volts').innerText = data.v + 'V';"
+" document.getElementById('m-rpm').innerText = data.r + ' RPM';"
+" document.getElementById('m-temp').innerText = data.t + '°C';"
+" document.getElementById('m-acv').innerText = data.av + 'V';"
+" document.getElementById('m-hz').innerText = data.hz + 'Hz';"
+" });"
+" fetch('/telemetry').then(r => r.text()).then(text => { if(text.trim()!==''){ term.innerHTML=text; term.scrollTop=term.scrollHeight; } });"
+"}"
+"setInterval(pollTelemetry, 500); function controlGenerator(route){ fetch(route, {method:'POST'}); }"
+"function clearSystemLog(){ if(confirm('Wipe saved flash logs?')){ fetch('/clear-log',{method:'POST'}).then(() => { term.innerHTML=''; }); } }"
+"function uploadFile(){ var fi=document.getElementById('file-input'); if(fi.files.length===0){alert('Select .bin!');return;} jsUpdating=true; var fd=new FormData(); fd.append('update',fi.files[0]); var xhr=new XMLHttpRequest(); xhr.open('POST','/update',true); document.getElementById('prg-wrapper').style.display='block'; document.getElementById('status-msg').innerText='Uploading firmware...';"
+"xhr.upload.addEventListener('progress',function(e){ if(e.lengthComputable){ var p=Math.round((e.loaded/e.total)*100); document.getElementById('prg-bar').style.width=p+'%'; document.getElementById('prg-bar').innerText=p+'%'; } });"
+"xhr.onload=function(){ if(xhr.status===200){ document.getElementById('status-msg').style.color='#00ff00'; document.getElementById('status-msg').innerText='✅ Success! Rebooting...'; }else{ document.getElementById('status-msg').innerText='❌ Failed: '+xhr.responseText; jsUpdating=false; } }; xhr.send(fd); }</script></body></html>";
+
 void setup() {
     Serial.begin(115200);
-    delay(500);
-
-    if (!LittleFS.begin(true)) {
-        Serial.println("❌ LittleFS Mount Failed!");
-    } else {
-        Serial.println("📂 LittleFS Mounted Successfully.");
-    }
-
+    LittleFS.begin(true);
     pinMode(STATUS_LED_PIN, OUTPUT);
     logMutex = xSemaphoreCreateMutex();
-    logMessage("=============================================\n");
-    logMessage(" Cummins Diagnostic & Control System Booted   \n");
-    logMessage("=============================================\n");
 
-    esp_bt_controller_disable();
-    esp_bt_controller_deinit();
     WiFi.mode(WIFI_AP);
     WiFi.softAP("Cummins_Live_Dashboard", "12345678", 6, false, 2);
     WiFi.setTxPower(WIFI_POWER_13dBm);
-
-    ArduinoOTA.onStart([]() {
-        isUpdating = true;
-        vTaskDelay(pdMS_TO_TICKS(50));
-        twai_stop();
-        twai_driver_uninstall();
-        Serial.println("VS Code OTA Flash Initiated...");
-    });
-    ArduinoOTA.onEnd([]() { Serial.println("\nVS Code OTA Complete. Rebooting..."); });
     ArduinoOTA.begin();
 
     server.on("/", HTTP_GET, []() { server.send(200, "text/html", htmlDashboard); });
-    
     server.on("/telemetry", HTTP_GET, []() {
-        String logPayload = "";
-        if (logMutex != NULL && xSemaphoreTake(logMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
-            logPayload = webLogBuffer;
-            xSemaphoreGive(logMutex);
-        }
-        logPayload.replace("\n", "<br>");
-        server.send(200, "text/plain", logPayload);
+        String p = ""; if (logMutex != NULL && xSemaphoreTake(logMutex, pdMS_TO_TICKS(10)) == pdTRUE) { p = webLogBuffer; xSemaphoreGive(logMutex); }
+        p.replace("\n", "<br>"); server.send(200, "text/plain", p);
     });
 
-    server.on("/update", HTTP_POST, []() {
-        server.sendHeader("Connection", "close");
-        if (Update.hasError()) { server.send(500, "text/plain", "Flash verification failed!"); }
-        else { server.send(200, "text/plain", "OK"); delay(2000); ESP.restart(); }
-    }, []() {
-        HTTPUpload& upload = server.upload();
-        if (upload.status == UPLOAD_FILE_START) {
-            isUpdating = true;
-            vTaskDelay(pdMS_TO_TICKS(50));
-            twai_stop();
-            twai_driver_uninstall();
-            if (!Update.begin(UPDATE_SIZE_UNKNOWN)) { Update.printError(Serial); }
-        } else if (upload.status == UPLOAD_FILE_WRITE) {
-            yield();
-            if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) { Update.printError(Serial); }
-            yield();
-        } else if (upload.status == UPLOAD_FILE_END) {
-            Update.end(true);
-        }
+    // Unified structured API channel driving our custom card variables 
+    server.on("/telemetry-json", HTTP_GET, []() {
+        char j_buf[128];
+        snprintf(j_buf, sizeof(j_buf), "{\"v\":%.1f,\"r\":%u,\"t\":%d,\"hz\":%.1f,\"av\":%u}", 
+                 liveBatteryVoltage, liveEngineRPM, liveInverterTemp, liveACFrequency, liveACVoltage);
+        server.send(200, "application/json", j_buf);
+    });
+
+    server.on("/update", HTTP_POST, []() { server.send(200, "text/plain", "OK"); delay(1000); ESP.restart(); }, []() {
+        HTTPUpload& u = server.upload();
+        if (u.status == UPLOAD_FILE_START) { isUpdating = true; twai_stop(); twai_driver_uninstall(); Update.begin(UPDATE_SIZE_UNKNOWN); }
+        else if (u.status == UPLOAD_FILE_WRITE) { Update.write(u.buf, u.currentSize); }
     });
 
     server.on("/download-log", HTTP_GET, []() {
-        if (LittleFS.exists("/log.txt")) {
-            File file = LittleFS.open("/log.txt", FILE_READ);
-            server.sendHeader("Content-Disposition", "attachment; filename=onan_generator_log.txt");
-            server.streamFile(file, "text/plain");
-            file.close();
-        } else { server.send(404, "text/plain", "Log is empty."); }
+        File f = LittleFS.open("/log.txt", FILE_READ); server.streamFile(f, "text/plain"); f.close();
     });
+    server.on("/clear-log", HTTP_POST, []() { LittleFS.remove("/log.txt"); webLogBuffer = ""; server.send(200, "text/plain", "OK"); });
 
-    server.on("/clear-log", HTTP_POST, []() {
-        LittleFS.remove("/log.txt");
-        if (logMutex != NULL && xSemaphoreTake(logMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-            webLogBuffer = ""; globalLogEntryCounter = 0;
-            xSemaphoreGive(logMutex);
-        }
-        server.send(200, "text/plain", "OK");
-    });
+    server.on("/gen-start", HTTP_POST, []() { currentActiveCommand = CMD_START; server.send(200, "text/plain", "PENDING"); });
+    server.on("/gen-stop", HTTP_POST, []() { currentActiveCommand = CMD_STOP; server.send(200, "text/plain", "PENDING"); });
+    server.on("/gen-prime", HTTP_POST, []() { currentActiveCommand = CMD_PRIME; server.send(200, "text/plain", "PENDING"); });
 
-    server.on("/gen-start", HTTP_POST, []() { currentActiveCommand = CMD_START; server.send(200, "text/plain", "START_PENDING"); });
-    server.on("/gen-stop", HTTP_POST, []() { currentActiveCommand = CMD_STOP; server.send(200, "text/plain", "STOP_PENDING"); });
-    server.on("/gen-prime", HTTP_POST, []() { currentActiveCommand = CMD_PRIME; server.send(200, "text/plain", "PRIME_PENDING"); });
-
-    // Active controller requires normal driver loop to allow frame writing
     twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(CTX_PIN, CRX_PIN, TWAI_MODE_NORMAL);
-    // Change TWAI_MODE_NORMAL to TWAI_MODE_NO_ACK for internal hardware loopback validation
-    //twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(CTX_PIN, CRX_PIN, TWAI_MODE_NO_ACK);
-
     g_config.rx_queue_len = 64;
     twai_timing_config_t t_config = TWAI_TIMING_CONFIG_250KBITS();
     twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
 
     if (twai_driver_install(&g_config, &t_config, &f_config) == ESP_OK && twai_start() == ESP_OK) {
-        logMessage("Status: Transceiver Core Initialized (NORMAL MODE).\n");
-        xTaskCreate(twaiBackgroundEngine, "TWAI_Engine_Task", 4096, NULL, 3, &xTwaiTaskHandle);
-    } else {
-        Serial.println("Error: Critical Network Driver Fault!");
+        xTaskCreate(twaiBackgroundEngine, "TWAI_Task", 4096, NULL, 3, &xTwaiTaskHandle);
     }
     server.begin();
 }
@@ -282,9 +214,7 @@ void loop() {
     ArduinoOTA.handle();
 
     unsigned long currentMillis = millis();
-    unsigned int flashInterval = 1000;
-
-    if (currentMillis - lastDataReceivedTime < 2000) { flashInterval = 150; }
+    unsigned int flashInterval = (currentMillis - lastDataReceivedTime < 2000) ? 150 : 1000;
 
     if (currentMillis - lastLedToggle >= flashInterval) {
         lastLedToggle = currentMillis;
@@ -294,7 +224,6 @@ void loop() {
     vTaskDelay(pdMS_TO_TICKS(2));
 }
 
-// Thread managing standard J1939 Reading alongside continuous 100ms Command Broadcasts
 void twaiBackgroundEngine(void *pvParameters) {
     twai_message_t rx_msg;
     twai_message_t tx_msg;
@@ -310,46 +239,23 @@ void twaiBackgroundEngine(void *pvParameters) {
 
     while (1) {
         if (isUpdating) { vTaskDelay(pdMS_TO_TICKS(100)); continue; }
-
         GenControlCommand activeCmd = currentActiveCommand;
 
-        // Start tracking time if a new button press is detected
-        if (activeCmd != CMD_RELEASE && previousCommand == CMD_RELEASE) {
-            commandStartTime = millis();
-            logMessage("⏱ [REMOTE] New command engaged. Setting 3-second fallback timer.\n");
-        }
+        if (activeCmd != CMD_RELEASE && previousCommand == CMD_RELEASE) { commandStartTime = millis(); }
         previousCommand = activeCmd;
 
-        // WORKBENCH SAFETY TIMEOUT: Automatically give up after 3 seconds without generator feedback
-        if (activeCmd != CMD_RELEASE && (millis() - commandStartTime >= 3000)) {
-            currentActiveCommand = CMD_RELEASE;
-            activeCmd = CMD_RELEASE;
-            logMessage("⚠️ [REMOTE] No response from generator engine. Releasing command line to IDLE.\n");
+        if (activeCmd != CMD_RELEASE && (millis() - commandStartTime >= 3000)) { currentActiveCommand = CMD_RELEASE; activeCmd = CMD_RELEASE; }
+
+        unsigned long now = millis();
+        if (now - lastTxTime >= 100) {
+            lastTxTime = now;
+            for(int i = 1; i < 8; i++) { tx_msg.data[i] = 0xFF; }
+            tx_msg.data[0] = (uint8_t)activeCmd;
+
+            if (activeCmd != CMD_RELEASE) { twai_transmit(&tx_msg, pdMS_TO_TICKS(5)); }
         }
 
-// --- CYCLIC TRANSMISSION LOOP (Runs every 100ms) ---
-unsigned long now = millis();
-if (now - lastTxTime >= 100) {
-    lastTxTime = now;
-    
-    // 1. Properly initialize padding bytes 1 through 7
-    for(int i = 1; i < 8; i++) { tx_msg.data[i] = 0xFF; }
-    
-    // 2. ✅ FIXED: Target index [0] explicitly for your active command flag
-    GenControlCommand activeCmd = currentActiveCommand;
-    tx_msg.data[0] = (uint8_t)activeCmd;
-
-    // 3. ✅ FIXED: Print the true payload value at index [0] instead of the memory pointer address
-    if (activeCmd != CMD_RELEASE) {
-        logMessage("📡 [REMOTE] Broadcasting J1939 Command Flag: 0x%02X\n", tx_msg.data[0]);
-        twai_transmit(&tx_msg, pdMS_TO_TICKS(5));
-    }
-}
-
-
-
-        // --- NETWORK DATA RECEIVER ---
-        if (twai_receive(&rx_msg, pdMS_TO_TICKS(10)) == ESP_OK) {
+        if (twai_receive(&rx_msg, pdMS_TO_TICKS(5)) == ESP_OK) {
             if (rx_msg.extd) {
                 uint32_t pgn = (rx_msg.identifier >> 8) & 0x3FFFF;
                 if (pgn == 65280) { 
@@ -362,79 +268,70 @@ if (now - lastTxTime >= 100) {
     }
 }
 
-
 void processHglcaNetworkFrame(twai_message_t msg) {
+    // --- ADVANCED BIT EXTRACTOR MATRIX ---
     uint8_t engineState = msg.data[0];
-    static uint8_t lastEngineState = 0xFF;
+    globalGensetState = engineState;
 
+    // Byte 1: Engine Speed (Scaled value from internal module, e.g., Value x 10)
+    liveEngineRPM = msg.data[1] * 10;
+
+    // Byte 3: System Voltage (Scaled by 0.1V, e.g., 126 = 12.6V)
+    liveBatteryVoltage = msg.data[3] * 0.1;
+
+    // Byte 4: Core Temperature (Offset by -40 degrees C)
+    liveInverterTemp = (int16_t)msg.data[4] - 40;
+
+    // Byte 5: Alternator Frequency (Scaled by 0.5Hz, e.g., 120 = 60.0Hz)
+    liveACFrequency = msg.data[5] * 0.5;
+
+    // Byte 6: Direct AC Root-Mean-Square (RMS) Voltages
+    liveACVoltage = msg.data[6];
+
+    static uint8_t lastEngineState = 0xFF;
     if (engineState != lastEngineState) {
         lastEngineState = engineState;
-        logMessage("\n⚡ [GENSET STATE CHANGE] Status: ");
+        logMessage("\n⚡ [STATE CHANGE] Status: ");
         switch(engineState) {
-            case 0: logMessage("Ready / Standby (AC Disconnected)\n"); break;
-            case 1: logMessage("Stopped / Engine Inactive\n"); break;
-            case 2: logMessage("Starting / Cranking Engine\n"); break;
-            case 3: logMessage("Running / Producing AC Power\n"); break;
-            case 4: logMessage("Warm-up Mode / Automatic Choke Active\n"); break;
-            case 5: logMessage("FUEL PRIMING RUNNING (Lift Pump Engaged)\n"); break;
-            case 6: logMessage("CRITICAL CRASH / FAULT SHUTDOWN TRIGGERED\n"); break;
-            case 15: logMessage("Internal Use Mode / Core Initializing\n"); break;
-            default: logMessage("Unknown State (0x%02X)\n", engineState); break;
+            case 0: logMessage("Ready / Standby\n"); break;
+            case 1: logMessage("Stopped / Inactive\n"); break;
+            case 2: logMessage("Starting / Cranking\n"); break;
+            case 3: logMessage("Running / Producing AC\n"); break;
+            case 5: logMessage("FUEL PRIMING RUNNING\n"); break;
+            case 6: logMessage("CRITICAL FAULT SHUTDOWN\n"); break;
+            default: logMessage("Unknown (0x%02X)\n", engineState); break;
         }
 
         if ((engineState == 3 && currentActiveCommand == CMD_START) ||
             (engineState == 1 && currentActiveCommand == CMD_STOP)  ||
             (engineState == 5 && currentActiveCommand == CMD_PRIME)) {
             currentActiveCommand = CMD_RELEASE;
-            logMessage("✔ [REMOTE] Target state achieved. Command line released to idle.\n");
         }
     }
 
-    uint16_t activeFaultCode = 0;
-    if (msg.data[2] >= 0x30 && msg.data[2] <= 0x39) { activeFaultCode = msg.data[2] - 0x30; } 
-    else { activeFaultCode = msg.data[2]; }
-
-    if (engineState == 6 && activeFaultCode == 0) { activeFaultCode = 53; }
-
+    uint16_t activeFaultCode = (engineState == 6 && msg.data[2] == 0) ? 53 : msg.data[2];
     static uint16_t lastFaultCode = 0x0000;
-    static uint8_t lastLoggedStateForMatrix = 0xFF;
 
     if (engineState != 6 && (activeFaultCode == 0x00 || msg.data[2] == 0xFF)) {
-        if (lastFaultCode != 0) {
-            logMessage("\n✔ [DIAGNOSTIC] Faults Cleared. System Normal.\n");
-            lastFaultCode = 0;
-        }
-        lastLoggedStateForMatrix = engineState;
+        if (lastFaultCode != 0) { logMessage("\n✔ [DIAGNOSTIC] System Normal.\n"); lastFaultCode = 0; }
         return;
     }
 
-    if (activeFaultCode != lastFaultCode || engineState != lastLoggedStateForMatrix) {
+    if (activeFaultCode != lastFaultCode) {
         lastFaultCode = activeFaultCode;
-        lastLoggedStateForMatrix = engineState;
-        logMessage("\n------------------------------------------------\n");
-        if (engineState == 6) { logMessage("🚨 [CRASH MATRIX DUMP - FAULT ACTIVE]\n"); } 
-        else { logMessage("⚠ [HGLCA INVERTER FAULT CODE ENCOUNTERED]\n"); }
-        
-        logMessage("Raw Stream Payload Matrix: ");
+        logMessage("\n🚨 [FAULT ACTIVE] Raw Payload: ");
         for(int i = 0; i < 8; i++) { logMessage("%02X ", msg.data[i]); }
         logMessage("\n");
 
-        bool matchFound = false;
         for (int i = 0; i < ONAN_DB_COUNT; i++) {
-            uint16_t tableFault = pgm_read_word(&(ONAN_FAULT_TABLE[i].faultNumber));
-            if (tableFault == activeFaultCode) {
-                uint32_t diagnosticSpn = pgm_read_dword(&(ONAN_FAULT_TABLE[i].spn));
-                uint8_t diagnosticFmi = pgm_read_byte(&(ONAN_FAULT_TABLE[i].fmi));
-                const char* label = (const char*)pgm_read_ptr(&(ONAN_FAULT_TABLE[i].displayLabel));
-                
-                logMessage("Manual Reference: Code %d\n", activeFaultCode); //
-                logMessage("J1939 Mapping   : SPN %lu, FMI %d\n", diagnosticSpn, diagnosticFmi);
-                logMessage("Description     : %s\n", label);
-                matchFound = true;
+            if (pgm_read_word(&(ONAN_FAULT_TABLE[i].faultNumber)) == activeFaultCode) {
+                logMessage("J1939: SPN %lu, FMI %d | Description: %s\n", 
+                           pgm_read_dword(&(ONAN_FAULT_TABLE[i].spn)), 
+                           pgm_read_byte(&(ONAN_FAULT_TABLE[i].fmi)), 
+                           (const char*)pgm_read_ptr(&(ONAN_FAULT_TABLE[i].displayLabel)));
                 break;
             }
         }
-        if (!matchFound) { logMessage("Alert: Unmapped Inverter Code -> Code %d\n", activeFaultCode); }
-        logMessage("------------------------------------------------\n");
     }
 }
+

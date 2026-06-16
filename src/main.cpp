@@ -1,4 +1,4 @@
-/* 6-15-26 v3 --- J1939 Active Control & SPN/FMI Deep Diagnostic Engine
+/* 6-16-26--- Bench test
 
 
 */
@@ -262,7 +262,10 @@ void setup() {
     server.on("/gen-prime", HTTP_POST, []() { currentActiveCommand = CMD_PRIME; server.send(200, "text/plain", "PRIME_PENDING"); });
 
     // Active controller requires normal driver loop to allow frame writing
-    twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(CTX_PIN, CRX_PIN, TWAI_MODE_NORMAL);
+    //twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(CTX_PIN, CRX_PIN, TWAI_MODE_NORMAL);
+    // Change TWAI_MODE_NORMAL to TWAI_MODE_NO_ACK for internal hardware loopback validation
+    twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(CTX_PIN, CRX_PIN, TWAI_MODE_NO_ACK);
+
     g_config.rx_queue_len = 64;
     twai_timing_config_t t_config = TWAI_TIMING_CONFIG_250KBITS();
     twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();

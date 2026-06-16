@@ -1,4 +1,4 @@
-/* 6-16-26--- Payload is Pure, need 5v on data, added timeout if gen no reply
+/* 6-16-26--- dashboard refresh
 
 */
 

@@ -1,5 +1,4 @@
-/* 6-16-26--- Bench test
-
+/* 6-16-26--- Payload is Pure, need 5v on data, added timeout if gen no reply
 
 */
 
@@ -262,9 +261,9 @@ void setup() {
     server.on("/gen-prime", HTTP_POST, []() { currentActiveCommand = CMD_PRIME; server.send(200, "text/plain", "PRIME_PENDING"); });
 
     // Active controller requires normal driver loop to allow frame writing
-    //twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(CTX_PIN, CRX_PIN, TWAI_MODE_NORMAL);
+    twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(CTX_PIN, CRX_PIN, TWAI_MODE_NORMAL);
     // Change TWAI_MODE_NORMAL to TWAI_MODE_NO_ACK for internal hardware loopback validation
-    twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(CTX_PIN, CRX_PIN, TWAI_MODE_NO_ACK);
+    //twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(CTX_PIN, CRX_PIN, TWAI_MODE_NO_ACK);
 
     g_config.rx_queue_len = 64;
     twai_timing_config_t t_config = TWAI_TIMING_CONFIG_250KBITS();
@@ -295,6 +294,7 @@ void loop() {
     vTaskDelay(pdMS_TO_TICKS(2));
 }
 
+// Thread managing standard J1939 Reading alongside continuous 100ms Command Broadcasts
 void twaiBackgroundEngine(void *pvParameters) {
     twai_message_t rx_msg;
     twai_message_t tx_msg;
@@ -302,27 +302,53 @@ void twaiBackgroundEngine(void *pvParameters) {
     tx_msg.extd = 1;
     tx_msg.rtr = 0;
     tx_msg.data_length_code = 8;
-    tx_msg.identifier = 0x0CE0FF27; 
+    tx_msg.identifier = 0x0CE0FF01; 
     
     unsigned long lastTxTime = 0;
+    unsigned long commandStartTime = 0;
+    GenControlCommand previousCommand = CMD_RELEASE;
 
     while (1) {
         if (isUpdating) { vTaskDelay(pdMS_TO_TICKS(100)); continue; }
 
-        unsigned long now = millis();
-        if (now - lastTxTime >= 100) {
-            lastTxTime = now;
-            for(int i = 1; i < 8; i++) { tx_msg.data[i] = 0xFF; }
-            
-            GenControlCommand activeCmd = currentActiveCommand;
-            tx_msg.data[0] = (uint8_t)activeCmd;
+        GenControlCommand activeCmd = currentActiveCommand;
 
-            if (activeCmd != CMD_RELEASE) {
-                logMessage("📡 [REMOTE] Broadcasting J1939 Command Flag: 0x%02X\n", tx_msg.data[0]);
-            }
-            twai_transmit(&tx_msg, pdMS_TO_TICKS(5));
+        // Start tracking time if a new button press is detected
+        if (activeCmd != CMD_RELEASE && previousCommand == CMD_RELEASE) {
+            commandStartTime = millis();
+            logMessage("⏱ [REMOTE] New command engaged. Setting 3-second fallback timer.\n");
+        }
+        previousCommand = activeCmd;
+
+        // WORKBENCH SAFETY TIMEOUT: Automatically give up after 3 seconds without generator feedback
+        if (activeCmd != CMD_RELEASE && (millis() - commandStartTime >= 3000)) {
+            currentActiveCommand = CMD_RELEASE;
+            activeCmd = CMD_RELEASE;
+            logMessage("⚠️ [REMOTE] No response from generator engine. Releasing command line to IDLE.\n");
         }
 
+// --- CYCLIC TRANSMISSION LOOP (Runs every 100ms) ---
+unsigned long now = millis();
+if (now - lastTxTime >= 100) {
+    lastTxTime = now;
+    
+    // 1. Properly initialize padding bytes 1 through 7
+    for(int i = 1; i < 8; i++) { tx_msg.data[i] = 0xFF; }
+    
+    // 2. ✅ FIXED: Target index [0] explicitly for your active command flag
+    GenControlCommand activeCmd = currentActiveCommand;
+    tx_msg.data[0] = (uint8_t)activeCmd;
+
+    // 3. ✅ FIXED: Print the true payload value at index [0] instead of the memory pointer address
+    if (activeCmd != CMD_RELEASE) {
+        logMessage("📡 [REMOTE] Broadcasting J1939 Command Flag: 0x%02X\n", tx_msg.data[0]);
+        twai_transmit(&tx_msg, pdMS_TO_TICKS(5));
+    }
+}
+
+
+
+        // --- NETWORK DATA RECEIVER ---
         if (twai_receive(&rx_msg, pdMS_TO_TICKS(10)) == ESP_OK) {
             if (rx_msg.extd) {
                 uint32_t pgn = (rx_msg.identifier >> 8) & 0x3FFFF;
@@ -335,6 +361,7 @@ void twaiBackgroundEngine(void *pvParameters) {
         vTaskDelay(pdMS_TO_TICKS(5));
     }
 }
+
 
 void processHglcaNetworkFrame(twai_message_t msg) {
     uint8_t engineState = msg.data[0];

@@ -1,4 +1,4 @@
-/* 6-16-26--- dashboard refresh
+/* 6-17-26--- sniffng dashboard data
 
 */
 
@@ -279,63 +279,20 @@ void twaiBackgroundEngine(void *pvParameters) {
 }
 
 void processHglcaNetworkFrame(twai_message_t msg) {
-    // --- J1939 PROPRIETARY DATA EXTRACTOR MATRIX ---
-    uint8_t engineState = msg.data[0]; // Target Byte 0 (Engine State ID)
+    // 1. Instantly log out the precise raw HEX byte map coming from the engine
+    logMessage("\n🔍 [J1939 SNIFFER] PGN: 65280 | Hex Map: ");
+    for(int i = 0; i < 8; i++) { 
+        logMessage("[%d]:0x%02X ", i, msg.data[i]); 
+    }
+    logMessage("\n");
+
+    // 2. Keep the basic engine state state tracking operational so you can run comparisons
+    uint8_t engineState = msg.data[0];
     globalGensetState = engineState;
-
-    // ✅ FIXED: Added specific numerical indices to separate the data channels
-    liveEngineRPM      = msg.data[1] * 10;        // Byte 1: Engine Speed (RPM)
-    liveBatteryVoltage = msg.data[3] * 0.1;       // Byte 3: Battery Voltage (Volts)
-    liveInverterTemp   = (int16_t)msg.data[4] - 40; // Byte 4: Inverter Temp (°C)
-    liveACFrequency    = msg.data[5] * 0.5;       // Byte 5: AC Frequency (Hz)
-    liveACVoltage      = msg.data[6];             // Byte 6: AC Voltage (RMS)
-
-    static uint8_t lastEngineState = 0xFF;
-    if (engineState != lastEngineState) {
-        lastEngineState = engineState;
-        logMessage("\n⚡ [STATE CHANGE] Status: ");
-        switch(engineState) {
-            case 0: logMessage("Ready / Standby (AC Disconnected)\n"); break;
-            case 1: logMessage("Stopped / Engine Inactive\n"); break;
-            case 2: logMessage("Starting / Cranking Engine\n"); break;
-            case 3: logMessage("Running / Producing AC Power\n"); break;
-            case 4: logMessage("Warm-up Mode / Automatic Choke Active\n"); break;
-            case 5: logMessage("FUEL PRIMING RUNNING (Lift Pump Engaged)\n"); break;
-            case 6: logMessage("CRITICAL CRASH / FAULT SHUTDOWN TRIGGERED\n"); break;
-            case 15: logMessage("Internal Use Mode / Core Initializing\n"); break;
-            default: logMessage("Unknown (0x%02X)\n", engineState); break;
-        }
-
-        if ((engineState == 3 && currentActiveCommand == CMD_START) ||
-            (engineState == 1 && currentActiveCommand == CMD_STOP)  ||
-            (engineState == 5 && currentActiveCommand == CMD_PRIME)) {
-            currentActiveCommand = CMD_RELEASE;
-            logMessage("✔ [REMOTE] Target state achieved. Command line released to idle.\n");
-        }
-    }
-
-    uint16_t activeFaultCode = (engineState == 6 && msg.data[2] == 0) ? 53 : msg.data[2]; // Target Byte 2
-    static uint16_t lastFaultCode = 0x0000;
-
-    if (engineState != 6 && (activeFaultCode == 0x00 || msg.data[2] == 0xFF)) {
-        if (lastFaultCode != 0) { logMessage("\n✔ [DIAGNOSTIC] System Normal. Faults cleared.\n"); lastFaultCode = 0; }
-        return;
-    }
-
-    if (activeFaultCode != lastFaultCode) {
-        lastFaultCode = activeFaultCode;
-        logMessage("\n🚨 [FAULT ACTIVE] Raw Payload Frame Matrix: ");
-        for(int i = 0; i < 8; i++) { logMessage("%02X ", msg.data[i]); }
-        logMessage("\n");
-
-        for (int i = 0; i < ONAN_DB_COUNT; i++) {
-            if (pgm_read_word(&(ONAN_FAULT_TABLE[i].faultNumber)) == activeFaultCode) {
-                logMessage("J1939: SPN %lu, FMI %d | Description: %s\n", 
-                           pgm_read_dword(&(ONAN_FAULT_TABLE[i].spn)), 
-                           pgm_read_byte(&(ONAN_FAULT_TABLE[i].fmi)), 
-                           (const char*)pgm_read_ptr(&(ONAN_FAULT_TABLE[i].displayLabel)));
-                break;
-            }
-        }
+    
+    static uint8_t lastState = 0xFF;
+    if (engineState != lastState) {
+        lastState = engineState;
+        logMessage(" G_STATE: %d\n", engineState);
     }
 }

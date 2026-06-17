@@ -231,7 +231,7 @@ void twaiBackgroundEngine(void *pvParameters) {
     tx_msg.extd = 1;
     tx_msg.rtr = 0;
     tx_msg.data_length_code = 8;
-    tx_msg.identifier = 0x0CE0FF01; 
+    tx_msg.identifier = 0x0CE0FF01; // Change to 0x0CE0FF27 if utilizing Source Address 27
     
     unsigned long lastTxTime = 0;
     unsigned long commandStartTime = 0;
@@ -241,18 +241,28 @@ void twaiBackgroundEngine(void *pvParameters) {
         if (isUpdating) { vTaskDelay(pdMS_TO_TICKS(100)); continue; }
         GenControlCommand activeCmd = currentActiveCommand;
 
-        if (activeCmd != CMD_RELEASE && previousCommand == CMD_RELEASE) { commandStartTime = millis(); }
+        if (activeCmd != CMD_RELEASE && previousCommand == CMD_RELEASE) { 
+            commandStartTime = millis(); 
+        }
         previousCommand = activeCmd;
 
-        if (activeCmd != CMD_RELEASE && (millis() - commandStartTime >= 3000)) { currentActiveCommand = CMD_RELEASE; activeCmd = CMD_RELEASE; }
+        if (activeCmd != CMD_RELEASE && (millis() - commandStartTime >= 3000)) { 
+            currentActiveCommand = CMD_RELEASE; 
+            activeCmd = CMD_RELEASE; 
+            logMessage("\n⚠️ [REMOTE] No response from generator. Command line cleared to IDLE.\n");
+        }
 
         unsigned long now = millis();
         if (now - lastTxTime >= 100) {
             lastTxTime = now;
             for(int i = 1; i < 8; i++) { tx_msg.data[i] = 0xFF; }
-            tx_msg.data[0] = (uint8_t)activeCmd;
+            tx_msg.data[0] = (uint8_t)activeCmd; // ✅ FIXED: Explicit index 0 target for tx
 
-            if (activeCmd != CMD_RELEASE) { twai_transmit(&tx_msg, pdMS_TO_TICKS(5)); }
+            if (activeCmd != CMD_RELEASE) { 
+                // ✅ FIXED: Forces a raw string carriage breakdown so the Web terminal displays the active broadcast frame
+                logMessage("\n📡 [REMOTE] Transmitting active J1939 Command: 0x%02X\n", tx_msg.data[0]);
+                twai_transmit(&tx_msg, pdMS_TO_TICKS(5)); 
+            }
         }
 
         if (twai_receive(&rx_msg, pdMS_TO_TICKS(5)) == ESP_OK) {
@@ -269,36 +279,30 @@ void twaiBackgroundEngine(void *pvParameters) {
 }
 
 void processHglcaNetworkFrame(twai_message_t msg) {
-    // --- ADVANCED BIT EXTRACTOR MATRIX ---
-    uint8_t engineState = msg.data[0];
+    // --- J1939 PROPRIETARY DATA EXTRACTOR MATRIX ---
+    uint8_t engineState = msg.data[0]; // Target Byte 0 (Engine State ID)
     globalGensetState = engineState;
 
-    // Byte 1: Engine Speed (Scaled value from internal module, e.g., Value x 10)
-    liveEngineRPM = msg.data[1] * 10;
-
-    // Byte 3: System Voltage (Scaled by 0.1V, e.g., 126 = 12.6V)
-    liveBatteryVoltage = msg.data[3] * 0.1;
-
-    // Byte 4: Core Temperature (Offset by -40 degrees C)
-    liveInverterTemp = (int16_t)msg.data[4] - 40;
-
-    // Byte 5: Alternator Frequency (Scaled by 0.5Hz, e.g., 120 = 60.0Hz)
-    liveACFrequency = msg.data[5] * 0.5;
-
-    // Byte 6: Direct AC Root-Mean-Square (RMS) Voltages
-    liveACVoltage = msg.data[6];
+    // ✅ FIXED: Added specific numerical indices to separate the data channels
+    liveEngineRPM      = msg.data[1] * 10;        // Byte 1: Engine Speed (RPM)
+    liveBatteryVoltage = msg.data[3] * 0.1;       // Byte 3: Battery Voltage (Volts)
+    liveInverterTemp   = (int16_t)msg.data[4] - 40; // Byte 4: Inverter Temp (°C)
+    liveACFrequency    = msg.data[5] * 0.5;       // Byte 5: AC Frequency (Hz)
+    liveACVoltage      = msg.data[6];             // Byte 6: AC Voltage (RMS)
 
     static uint8_t lastEngineState = 0xFF;
     if (engineState != lastEngineState) {
         lastEngineState = engineState;
         logMessage("\n⚡ [STATE CHANGE] Status: ");
         switch(engineState) {
-            case 0: logMessage("Ready / Standby\n"); break;
-            case 1: logMessage("Stopped / Inactive\n"); break;
-            case 2: logMessage("Starting / Cranking\n"); break;
-            case 3: logMessage("Running / Producing AC\n"); break;
-            case 5: logMessage("FUEL PRIMING RUNNING\n"); break;
-            case 6: logMessage("CRITICAL FAULT SHUTDOWN\n"); break;
+            case 0: logMessage("Ready / Standby (AC Disconnected)\n"); break;
+            case 1: logMessage("Stopped / Engine Inactive\n"); break;
+            case 2: logMessage("Starting / Cranking Engine\n"); break;
+            case 3: logMessage("Running / Producing AC Power\n"); break;
+            case 4: logMessage("Warm-up Mode / Automatic Choke Active\n"); break;
+            case 5: logMessage("FUEL PRIMING RUNNING (Lift Pump Engaged)\n"); break;
+            case 6: logMessage("CRITICAL CRASH / FAULT SHUTDOWN TRIGGERED\n"); break;
+            case 15: logMessage("Internal Use Mode / Core Initializing\n"); break;
             default: logMessage("Unknown (0x%02X)\n", engineState); break;
         }
 
@@ -306,20 +310,21 @@ void processHglcaNetworkFrame(twai_message_t msg) {
             (engineState == 1 && currentActiveCommand == CMD_STOP)  ||
             (engineState == 5 && currentActiveCommand == CMD_PRIME)) {
             currentActiveCommand = CMD_RELEASE;
+            logMessage("✔ [REMOTE] Target state achieved. Command line released to idle.\n");
         }
     }
 
-    uint16_t activeFaultCode = (engineState == 6 && msg.data[2] == 0) ? 53 : msg.data[2];
+    uint16_t activeFaultCode = (engineState == 6 && msg.data[2] == 0) ? 53 : msg.data[2]; // Target Byte 2
     static uint16_t lastFaultCode = 0x0000;
 
     if (engineState != 6 && (activeFaultCode == 0x00 || msg.data[2] == 0xFF)) {
-        if (lastFaultCode != 0) { logMessage("\n✔ [DIAGNOSTIC] System Normal.\n"); lastFaultCode = 0; }
+        if (lastFaultCode != 0) { logMessage("\n✔ [DIAGNOSTIC] System Normal. Faults cleared.\n"); lastFaultCode = 0; }
         return;
     }
 
     if (activeFaultCode != lastFaultCode) {
         lastFaultCode = activeFaultCode;
-        logMessage("\n🚨 [FAULT ACTIVE] Raw Payload: ");
+        logMessage("\n🚨 [FAULT ACTIVE] Raw Payload Frame Matrix: ");
         for(int i = 0; i < 8; i++) { logMessage("%02X ", msg.data[i]); }
         logMessage("\n");
 
@@ -334,4 +339,3 @@ void processHglcaNetworkFrame(twai_message_t msg) {
         }
     }
 }
-

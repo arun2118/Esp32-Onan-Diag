@@ -1,7 +1,8 @@
-/* 6-17-26--- sniffng dashboard data
-
+/* 6-17-26 --- Cummins Multi-PGN Deep Diagnostic & Vehicle Control Interface
+   1. Wire Connection: TX to GPIO1, RX to GPIO0 (via logic shifter), Grounded RS Pin.
+   2. Open Wi-Fi on device and connect to "Cummins_Live_Dashboard" with password "12345678"
+   3. Open browser and access address "192.168.4.1"
 */
-
 #include <Arduino.h>
 #include "driver/twai.h"
 #include "esp_wifi.h"
@@ -29,9 +30,9 @@ unsigned long globalLogEntryCounter = 0;
 enum GenControlCommand { CMD_RELEASE = 0, CMD_START = 1, CMD_STOP = 2, CMD_PRIME = 5 };
 volatile GenControlCommand currentActiveCommand = CMD_RELEASE;
 
-// --- Live Powertrain Metrics Buffers ---
+// --- Live Telemetry Variables Decoded from Cummins Matrix ---
 volatile float liveBatteryVoltage = 0.0;
-volatile uint16_t liveEngineRPM = 0;
+volatile float liveEngineRPM = 0.0;
 volatile int16_t liveInverterTemp = 0;
 volatile float liveACFrequency = 0.0;
 volatile uint16_t liveACVoltage = 0;
@@ -76,7 +77,6 @@ void logMessage(const char* format, ...) {
     if (logFile) { logFile.print(final_buf); logFile.close(); }
 }
 
-// Master Diagnostic Matrix mappings
 struct OnanFaultMapping { uint16_t faultNumber; uint32_t spn; uint8_t fmi; const char* displayLabel; };
 const char f_msg_01[] PROGMEM = "Engine Temperature Exceeded Limit";
 const char f_msg_04[] PROGMEM = "Over Crank Fault";
@@ -108,14 +108,13 @@ const int ONAN_DB_COUNT = sizeof(ONAN_FAULT_TABLE) / sizeof(ONAN_FAULT_TABLE[0])
 
 void processHglcaNetworkFrame(twai_message_t msg);
 void twaiBackgroundEngine(void *pvParameters);
-// HTML UI with responsive gauge elements and unified parsing strings
 const char htmlDashboard[] PROGMEM = "<!DOCTYPE html><html><head>"
 "<meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>"
 "<style>body{font-family:sans-serif; background:#121212; color:#e0e0e0; padding:15px; text-align:center;}"
 "h2, h3{color:#00adb5; margin:10px 0;} .box{background:#1e1e1e; padding:15px; border-radius:8px; margin:0 auto 15px auto; max-width:750px; border:1px solid #333;}"
 ".grid{display:flex; flex-wrap:wrap; gap:10px; justify-content:center; max-width:750px; margin:0 auto 15px auto;}"
-".metric-card{background:#1e1e1e; border:1px solid #333; border-radius:6px; padding:12px; width:130px; text-align:center; box-sizing:border-box;}"
-".val{font-size:20px; font-weight:bold; color:#00adb5; margin-top:5px;}"
+".metric-card{background:#1e1e1e; border:1px solid #333; border-radius:6px; padding:12px; width:135px; text-align:center; box-sizing:border-box;}"
+".val{font-size:18px; font-weight:bold; color:#00adb5; margin-top:5px;}"
 "pre{background:#000; color:#0f0; padding:12px; border-radius:5px; overflow-y:scroll; height:250px; font-family:monospace; text-align:left; white-space:pre-wrap; margin-bottom:10px;}"
 "input[type=file]{background:#2d2d2d; padding:6px; border-radius:4px; color:#fff; border:1px solid #444;}"
 "input[type=button], .btn-action{background:#00adb5; color:#fff; border:none; padding:10px 15px; border-radius:4px; cursor:pointer; font-weight:bold; text-decoration:none; display:inline-block; margin:4px;}"
@@ -123,15 +122,15 @@ const char htmlDashboard[] PROGMEM = "<!DOCTYPE html><html><head>"
 ".progress-container{width:100%; background-color:#2d2d2d; border-radius:4px; margin-top:10px; display:none;}"
 ".progress-bar{width:0%; height:18px; background-color:#00adb5; border-radius:4px; text-align:center; line-height:18px; color:white; font-size:11px;}"
 "#status-msg{margin-top:8px; font-weight:bold; color:#ffb703;}</style></head><body>"
-"<h2>Cummins HGLCA Pro Diagnostic System</h2>"
+"<h2>Cummins HGLCA Live J1939 Dashboard v2.0</h2>"
 "<div class='grid'>"
-" <div class='metric-card'><div>🔋 Battery</div><div class='val' id='m-volts'>0.0V</div></div>"
-" <div class='metric-card'><div>⚙️ Engine</div><div class='val' id='m-rpm'>0 RPM</div></div>"
-" <div class='metric-card'><div>🔥 Inverter</div><div class='val' id='m-temp'>0&deg;C</div></div>"
-" <div class='metric-card'><div>⚡ AC Power</div><div class='val' id='m-acv'>0V</div></div>"
+" <div class='metric-card'><div>🔋 Battery Input</div><div class='val' id='m-volts'>0.0V</div></div>"
+" <div class='metric-card'><div>⚙️ Engine Speed</div><div class='val' id='m-rpm'>0 RPM</div></div>"
+" <div class='metric-card'><div>🔥 Inverter Core</div><div class='val' id='m-temp'>0&deg;C</div></div>"
+" <div class='metric-card'><div>⚡ AC Output</div><div class='val' id='m-acv'>0V</div></div>"
 " <div class='metric-card'><div>🌀 Frequency</div><div class='val' id='m-hz'>0.0Hz</div></div>"
 "</div>"
-"<div class='box'><h3>Live System Console Logs</h3><pre id='terminal'>Awaiting telemetry synchronization...</pre>"
+"<div class='box'><h3>Live System Console Logs</h3><pre id='terminal'>Synchronizing multi-PGN J1939 data loops...</pre>"
 "<a href='/download-log' download='onan_generator_log.txt' class='btn-action'>💾 Download Log</a>"
 "<button onclick='clearSystemLog()' class='btn-action btn-clear'>🗑 Wipe Saved Log</button></div>"
 "<div class='box'><h3>⚡ Remote Powertrain Control Panel</h3>"
@@ -145,11 +144,11 @@ const char htmlDashboard[] PROGMEM = "<!DOCTYPE html><html><head>"
 "<script>var term = document.getElementById('terminal'); var jsUpdating = false;"
 "function pollTelemetry() { if(jsUpdating) return;"
 " fetch('/telemetry-json').then(r => r.json()).then(data => {"
-" document.getElementById('m-volts').innerText = data.v + 'V';"
-" document.getElementById('m-rpm').innerText = data.r + ' RPM';"
+" document.getElementById('m-volts').innerText = data.v.toFixed(1) + 'V';"
+" document.getElementById('m-rpm').innerText = Math.round(data.r) + ' RPM';"
 " document.getElementById('m-temp').innerText = data.t + '°C';"
 " document.getElementById('m-acv').innerText = data.av + 'V';"
-" document.getElementById('m-hz').innerText = data.hz + 'Hz';"
+" document.getElementById('m-hz').innerText = data.hz.toFixed(1) + 'Hz';"
 " });"
 " fetch('/telemetry').then(r => r.text()).then(text => { if(text.trim()!==''){ term.innerHTML=text; term.scrollTop=term.scrollHeight; } });"
 "}"
@@ -158,7 +157,6 @@ const char htmlDashboard[] PROGMEM = "<!DOCTYPE html><html><head>"
 "function uploadFile(){ var fi=document.getElementById('file-input'); if(fi.files.length===0){alert('Select .bin!');return;} jsUpdating=true; var fd=new FormData(); fd.append('update',fi.files[0]); var xhr=new XMLHttpRequest(); xhr.open('POST','/update',true); document.getElementById('prg-wrapper').style.display='block'; document.getElementById('status-msg').innerText='Uploading firmware...';"
 "xhr.upload.addEventListener('progress',function(e){ if(e.lengthComputable){ var p=Math.round((e.loaded/e.total)*100); document.getElementById('prg-bar').style.width=p+'%'; document.getElementById('prg-bar').innerText=p+'%'; } });"
 "xhr.onload=function(){ if(xhr.status===200){ document.getElementById('status-msg').style.color='#00ff00'; document.getElementById('status-msg').innerText='✅ Success! Rebooting...'; }else{ document.getElementById('status-msg').innerText='❌ Failed: '+xhr.responseText; jsUpdating=false; } }; xhr.send(fd); }</script></body></html>";
-
 void setup() {
     Serial.begin(115200);
     LittleFS.begin(true);
@@ -176,10 +174,9 @@ void setup() {
         p.replace("\n", "<br>"); server.send(200, "text/plain", p);
     });
 
-    // Unified structured API channel driving our custom card variables 
     server.on("/telemetry-json", HTTP_GET, []() {
         char j_buf[128];
-        snprintf(j_buf, sizeof(j_buf), "{\"v\":%.1f,\"r\":%u,\"t\":%d,\"hz\":%.1f,\"av\":%u}", 
+        snprintf(j_buf, sizeof(j_buf), "{\"v\":%.2f,\"r\":%.2f,\"t\":%d,\"hz\":%.2f,\"av\":%u}", 
                  liveBatteryVoltage, liveEngineRPM, liveInverterTemp, liveACFrequency, liveACVoltage);
         server.send(200, "application/json", j_buf);
     });
@@ -199,13 +196,19 @@ void setup() {
     server.on("/gen-stop", HTTP_POST, []() { currentActiveCommand = CMD_STOP; server.send(200, "text/plain", "PENDING"); });
     server.on("/gen-prime", HTTP_POST, []() { currentActiveCommand = CMD_PRIME; server.send(200, "text/plain", "PENDING"); });
 
+    // SET TO VEHICLE PRODUCTION MODE (NORMAL TRANSMIT MODE)
     twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(CTX_PIN, CRX_PIN, TWAI_MODE_NORMAL);
     g_config.rx_queue_len = 64;
     twai_timing_config_t t_config = TWAI_TIMING_CONFIG_250KBITS();
+    
+    // ACCEPT ALL PASS FILTER: Crucial for letting diverse Multi-PGN parameters pass to the processor
     twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
 
     if (twai_driver_install(&g_config, &t_config, &f_config) == ESP_OK && twai_start() == ESP_OK) {
+        logMessage("Status: Dual-Bus Engine Online (NORMAL MODE).\n");
         xTaskCreate(twaiBackgroundEngine, "TWAI_Task", 4096, NULL, 3, &xTwaiTaskHandle);
+    } else {
+        Serial.println("Error: Critical CAN Driver Fault!");
     }
     server.begin();
 }
@@ -231,7 +234,7 @@ void twaiBackgroundEngine(void *pvParameters) {
     tx_msg.extd = 1;
     tx_msg.rtr = 0;
     tx_msg.data_length_code = 8;
-    tx_msg.identifier = 0x0CE0FF01; // Change to 0x0CE0FF27 if utilizing Source Address 27
+    tx_msg.identifier = 0x0CE0FF01; 
     
     unsigned long lastTxTime = 0;
     unsigned long commandStartTime = 0;
@@ -241,37 +244,30 @@ void twaiBackgroundEngine(void *pvParameters) {
         if (isUpdating) { vTaskDelay(pdMS_TO_TICKS(100)); continue; }
         GenControlCommand activeCmd = currentActiveCommand;
 
-        if (activeCmd != CMD_RELEASE && previousCommand == CMD_RELEASE) { 
-            commandStartTime = millis(); 
-        }
+        if (activeCmd != CMD_RELEASE && previousCommand == CMD_RELEASE) { commandStartTime = millis(); }
         previousCommand = activeCmd;
 
         if (activeCmd != CMD_RELEASE && (millis() - commandStartTime >= 3000)) { 
             currentActiveCommand = CMD_RELEASE; 
             activeCmd = CMD_RELEASE; 
-            logMessage("\n⚠️ [REMOTE] No response from generator. Command line cleared to IDLE.\n");
+            logMessage("\n⚠️ [REMOTE] Safety Timeout triggered. Clearing command lines to IDLE.\n");
         }
 
         unsigned long now = millis();
         if (now - lastTxTime >= 100) {
             lastTxTime = now;
             for(int i = 1; i < 8; i++) { tx_msg.data[i] = 0xFF; }
-            tx_msg.data[0] = (uint8_t)activeCmd; // ✅ FIXED: Explicit index 0 target for tx
+            tx_msg.data[0] = (uint8_t)activeCmd;
 
             if (activeCmd != CMD_RELEASE) { 
-                // ✅ FIXED: Forces a raw string carriage breakdown so the Web terminal displays the active broadcast frame
-                logMessage("\n📡 [REMOTE] Transmitting active J1939 Command: 0x%02X\n", tx_msg.data[0]);
+                logMessage("\n📡 [REMOTE] Sending J1939 Override Command: 0x%02X\n", tx_msg.data[0]);
                 twai_transmit(&tx_msg, pdMS_TO_TICKS(5)); 
             }
         }
 
         if (twai_receive(&rx_msg, pdMS_TO_TICKS(5)) == ESP_OK) {
             if (rx_msg.extd) {
-                uint32_t pgn = (rx_msg.identifier >> 8) & 0x3FFFF;
-                if (pgn == 65280) { 
-                    lastDataReceivedTime = millis();
-                    processHglcaNetworkFrame(rx_msg);
-                }
+                processHglcaNetworkFrame(rx_msg);
             }
         }
         vTaskDelay(pdMS_TO_TICKS(5));
@@ -279,20 +275,113 @@ void twaiBackgroundEngine(void *pvParameters) {
 }
 
 void processHglcaNetworkFrame(twai_message_t msg) {
-    // 1. Instantly log out the precise raw HEX byte map coming from the engine
-    logMessage("\n🔍 [J1939 SNIFFER] PGN: 65280 | Hex Map: ");
-    for(int i = 0; i < 8; i++) { 
-        logMessage("[%d]:0x%02X ", i, msg.data[i]); 
-    }
-    logMessage("\n");
-
-    // 2. Keep the basic engine state state tracking operational so you can run comparisons
-    uint8_t engineState = msg.data[0];
-    globalGensetState = engineState;
+    // Isolate the Parameter Group Number (PGN) from the 29-bit J1939 Identifier
+    uint32_t pgn = (msg.identifier >> 8) & 0x3FFFF;
     
-    static uint8_t lastState = 0xFF;
-    if (engineState != lastState) {
-        lastState = engineState;
-        logMessage(" G_STATE: %d\n", engineState);
+    // Handle Data Page stripping if destination specific mapping occurs
+    if (((msg.identifier >> 16) & 0xFF) < 240) {
+        pgn = (msg.identifier >> 8) & 0x3FF00; 
+    }
+
+    switch(pgn) {
+        case 65280: { // Proprietary B (PropB_00) -> Genset Status Loop
+            lastDataReceivedTime = millis();
+            uint8_t engineState = msg.data[0];
+            globalGensetState = engineState;
+
+            static uint8_t lastEngineState = 0xFF;
+            if (engineState != lastEngineState) {
+                lastEngineState = engineState;
+                logMessage("\n⚡ [STATE CHANGE] Status: ");
+                switch(engineState) {
+                    case 0: logMessage("Ready / Standby (AC Disconnected)\n"); break;
+                    case 1: logMessage("Stopped / Engine Inactive\n"); break;
+                    case 2: logMessage("Starting / Cranking Engine\n"); break;
+                    case 3: logMessage("Running / Producing AC Power\n"); break;
+                    case 4: logMessage("Warm-up Mode / Automatic Choke\n"); break;
+                    case 5: logMessage("FUEL PRIMING RUNNING (Lift Pump Engaged)\n"); break;
+                    case 6: logMessage("CRITICAL CRASH / FAULT SHUTDOWN TRIGGERED\n"); break;
+                    default: logMessage("Unknown (0x%02X)\n", engineState); break;
+                }
+
+                if ((engineState == 3 && currentActiveCommand == CMD_START) ||
+                    (engineState == 1 && currentActiveCommand == CMD_STOP)  ||
+                    (engineState == 5 && currentActiveCommand == CMD_PRIME)) {
+                    currentActiveCommand = CMD_RELEASE;
+                    logMessage("✔ [REMOTE] Control Loop Handshake Complete.\n");
+                }
+            }
+
+            // Fault Code Processor Matrix
+            uint16_t activeFaultCode = (engineState == 6 && msg.data[2] == 0) ? 53 : msg.data[2];
+            static uint16_t lastFaultCode = 0x0000;
+
+            if (engineState != 6 && (activeFaultCode == 0x00 || msg.data[2] == 0xFF)) {
+                if (lastFaultCode != 0) { logMessage("\n✔ [DIAGNOSTIC] System Normal. Faults cleared.\n"); lastFaultCode = 0; }
+                break;
+            }
+
+            if (activeFaultCode != lastFaultCode) {
+                lastFaultCode = activeFaultCode;
+                logMessage("\n🚨 [FAULT ACTIVE] Raw Payload: ");
+                for(int i = 0; i < 8; i++) { logMessage("%02X ", msg.data[i]); }
+                logMessage("\n");
+
+                for (int i = 0; i < ONAN_DB_COUNT; i++) {
+                    if (pgm_read_word(&(ONAN_FAULT_TABLE[i].faultNumber)) == activeFaultCode) {
+                        logMessage("J1939: SPN %lu, FMI %d | Description: %s\n", 
+                                   pgm_read_dword(&(ONAN_FAULT_TABLE[i].spn)), 
+                                   pgm_read_byte(&(ONAN_FAULT_TABLE[i].fmi)), 
+                                   (const char*)pgm_read_ptr(&(ONAN_FAULT_TABLE[i].displayLabel)));
+                        break;
+                    }
+                }
+            }
+            break;
+        }
+
+        case 61444: { // PGN 61444: Electronic Engine Controller 1 (EEC1)
+            lastDataReceivedTime = millis();
+            // Bytes 4-5 (Indices 3,4): Engine Speed. Resolution: 0.125 rpm/bit
+            uint16_t rawRPM = (msg.data[4] << 8) | msg.data[3];
+            if (rawRPM != 0xFFFF) {
+                liveEngineRPM = rawRPM * 0.125;
+            }
+            break;
+        }
+
+        case 64409: { // PGN 64409: DC/AC Accessory Inverter 1 Temperatures
+            lastDataReceivedTime = millis();
+            // Byte 3 (Index 2): Power Electronics Temp. Resolution: 1 C/bit, Offset: -40 C
+            uint8_t rawTemp = msg.data[2];
+            if (rawTemp != 0xFF) {
+                liveInverterTemp = (int16_t)rawTemp - 40;
+            }
+            break;
+        }
+
+        case 65030: { // PGN 65030: Generator Average Basic AC Quantities (GAAC)
+            lastDataReceivedTime = millis();
+            // Bytes 3-4 (Indices 2,3): Line-Neutral AC RMS Voltage. Resolution: 1 V/bit
+            uint16_t rawACV = (msg.data[3] << 8) | msg.data[2];
+            if (rawACV != 0xFFFF) { liveACVoltage = rawACV; }
+
+            // Bytes 5-6 (Indices 4,5): Average AC Frequency. Resolution: 1/128 Hz/bit
+            uint16_t rawHz = (msg.data[5] << 8) | msg.data[4];
+            if (rawHz != 0xFFFF) {
+                liveACFrequency = rawHz * (1.0 / 128.0);
+            }
+            break;
+        }
+
+        case 65271: { // PGN 65271: Vehicle Electrical Power 1 (VEP1)
+            lastDataReceivedTime = millis();
+            // Bytes 5-6 (Indices 4,5): Battery Potential. Resolution: 0.05 V/bit
+            uint16_t rawVolts = (msg.data[5] << 8) | msg.data[4];
+            if (rawVolts != 0xFFFF) {
+                liveBatteryVoltage = rawVolts * 0.05;
+            }
+            break;
+        }
     }
 }

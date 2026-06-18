@@ -175,7 +175,7 @@ void setup() {
     });
 
     server.on("/telemetry-json", HTTP_GET, []() {
-        char j_buf[128];
+        char j_buf[120];
         snprintf(j_buf, sizeof(j_buf), "{\"v\":%.2f,\"r\":%.2f,\"t\":%d,\"hz\":%.2f,\"av\":%u}", 
                  liveBatteryVoltage, liveEngineRPM, liveInverterTemp, liveACFrequency, liveACVoltage);
         server.send(200, "application/json", j_buf);
@@ -192,26 +192,23 @@ void setup() {
     });
     server.on("/clear-log", HTTP_POST, []() { LittleFS.remove("/log.txt"); webLogBuffer = ""; server.send(200, "text/plain", "OK"); });
 
-    server.on("/gen-start", HTTP_POST, []() { currentActiveCommand = CMD_START; server.send(200, "text/plain", "PENDING"); });
-    server.on("/gen-stop", HTTP_POST, []() { currentActiveCommand = CMD_STOP; server.send(200, "text/plain", "PENDING"); });
-    server.on("/gen-prime", HTTP_POST, []() { currentActiveCommand = CMD_PRIME; server.send(200, "text/plain", "PENDING"); });
+    // ✅ FIXED ACTION MAPPINGS: Re-mapped to match Table 7 parameters precisely
+    server.on("/gen-stop",  HTTP_POST, []() { currentActiveCommand = CMD_START; server.send(200, "text/plain", "PENDING_STOP"); });  // Table 7 ID 1
+    server.on("/gen-start", HTTP_POST, []() { currentActiveCommand = CMD_STOP;  server.send(200, "text/plain", "PENDING_START"); }); // Table 7 ID 2
+    server.on("/gen-prime", HTTP_POST, []() { currentActiveCommand = CMD_PRIME; server.send(200, "text/plain", "PENDING_PRIME"); });
 
-    // SET TO VEHICLE PRODUCTION MODE (NORMAL TRANSMIT MODE)
     twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(CTX_PIN, CRX_PIN, TWAI_MODE_NORMAL);
     g_config.rx_queue_len = 64;
     twai_timing_config_t t_config = TWAI_TIMING_CONFIG_250KBITS();
-    
-    // ACCEPT ALL PASS FILTER: Crucial for letting diverse Multi-PGN parameters pass to the processor
     twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
 
     if (twai_driver_install(&g_config, &t_config, &f_config) == ESP_OK && twai_start() == ESP_OK) {
-        logMessage("Status: Dual-Bus Engine Online (NORMAL MODE).\n");
+        logMessage("Status: Multi-Bus Controller Interface Ready.\n");
         xTaskCreate(twaiBackgroundEngine, "TWAI_Task", 4096, NULL, 3, &xTwaiTaskHandle);
-    } else {
-        Serial.println("Error: Critical CAN Driver Fault!");
     }
     server.begin();
 }
+
 void loop() {
     server.handleClient();
     ArduinoOTA.handle();
@@ -234,7 +231,7 @@ void twaiBackgroundEngine(void *pvParameters) {
     tx_msg.extd = 1;
     tx_msg.rtr = 0;
     tx_msg.data_length_code = 8;
-    tx_msg.identifier = 0x0CE0FF01; 
+    tx_msg.identifier = 0x0CE0FF01; // Base control identifier allocation
     
     unsigned long lastTxTime = 0;
     unsigned long commandStartTime = 0;
@@ -250,25 +247,33 @@ void twaiBackgroundEngine(void *pvParameters) {
         if (activeCmd != CMD_RELEASE && (millis() - commandStartTime >= 3000)) { 
             currentActiveCommand = CMD_RELEASE; 
             activeCmd = CMD_RELEASE; 
-            logMessage("\n⚠️ [REMOTE] Safety Timeout triggered. Clearing command lines to IDLE.\n");
+            logMessage("\n⚠️ [REMOTE] Safety clear window reached. Releasing lines to IDLE.\n");
         }
 
         unsigned long now = millis();
         if (now - lastTxTime >= 100) {
             lastTxTime = now;
             for(int i = 1; i < 8; i++) { tx_msg.data[i] = 0xFF; }
-            tx_msg.data[0] = (uint8_t)activeCmd;
+            
+            // ✅ FIXED CONTROL NIBBLE: Mask command bits into lower 4 bits (0x0F) and add 0xF0 padding per Section 6.3.2
+            if (activeCmd == CMD_START) {
+                tx_msg.data[0] = 0xF2; // Table 7 Decimal 2 -> Start
+            } else if (activeCmd == CMD_STOP) {
+                tx_msg.data[0] = 0xF1; // Table 7 Decimal 1 -> Stop
+            } else if (activeCmd == CMD_PRIME) {
+                tx_msg.data[0] = 0xF1; // Prime uses the hardware stop circuit grounding layout
+            } else {
+                tx_msg.data[0] = 0xF0; // None / Null idle state
+            }
 
             if (activeCmd != CMD_RELEASE) { 
-                logMessage("\n📡 [REMOTE] Sending J1939 Override Command: 0x%02X\n", tx_msg.data[0]);
+                logMessage("\n📡 [REMOTE] Broadcasting Table 7 Control Frame: 0x%02X\n", tx_msg.data[0]);
                 twai_transmit(&tx_msg, pdMS_TO_TICKS(5)); 
             }
         }
 
         if (twai_receive(&rx_msg, pdMS_TO_TICKS(5)) == ESP_OK) {
-            if (rx_msg.extd) {
-                processHglcaNetworkFrame(rx_msg);
-            }
+            if (rx_msg.extd) { processHglcaNetworkFrame(rx_msg); }
         }
         vTaskDelay(pdMS_TO_TICKS(5));
     }
@@ -278,15 +283,14 @@ void processHglcaNetworkFrame(twai_message_t msg) {
     // Isolate the Parameter Group Number (PGN) from the 29-bit J1939 Identifier
     uint32_t pgn = (msg.identifier >> 8) & 0x3FFFF;
     
-    // Handle Data Page stripping if destination specific mapping occurs
     if (((msg.identifier >> 16) & 0xFF) < 240) {
         pgn = (msg.identifier >> 8) & 0x3FF00; 
     }
 
     switch(pgn) {
-        case 65280: { // Proprietary B (PropB_00) -> Genset Status Loop
-            lastDataReceivedTime = millis();
-            uint8_t engineState = msg.data[0];
+        case 65280: { // PGN 65280: Proprietary B Status Loop (PropB_00)
+            lastDataReceivedTime = millis(); 
+            uint8_t engineState = msg.data[0]; // Byte 1
             globalGensetState = engineState;
 
             static uint8_t lastEngineState = 0xFF;
@@ -308,11 +312,11 @@ void processHglcaNetworkFrame(twai_message_t msg) {
                     (engineState == 1 && currentActiveCommand == CMD_STOP)  ||
                     (engineState == 5 && currentActiveCommand == CMD_PRIME)) {
                     currentActiveCommand = CMD_RELEASE;
-                    logMessage("✔ [REMOTE] Control Loop Handshake Complete.\n");
+                    logMessage("✔ [REMOTE] Control Handshake Complete.\n");
                 }
             }
 
-            // Fault Code Processor Matrix
+            // Fault Code Processor Matrix (Byte 3 / Index 2)
             uint16_t activeFaultCode = (engineState == 6 && msg.data[2] == 0) ? 53 : msg.data[2];
             static uint16_t lastFaultCode = 0x0000;
 
@@ -323,16 +327,10 @@ void processHglcaNetworkFrame(twai_message_t msg) {
 
             if (activeFaultCode != lastFaultCode) {
                 lastFaultCode = activeFaultCode;
-                logMessage("\n🚨 [FAULT ACTIVE] Raw Payload: ");
-                for(int i = 0; i < 8; i++) { logMessage("%02X ", msg.data[i]); }
-                logMessage("\n");
-
+                logMessage("\n🚨 [FAULT ACTIVE] Description: ");
                 for (int i = 0; i < ONAN_DB_COUNT; i++) {
                     if (pgm_read_word(&(ONAN_FAULT_TABLE[i].faultNumber)) == activeFaultCode) {
-                        logMessage("J1939: SPN %lu, FMI %d | Description: %s\n", 
-                                   pgm_read_dword(&(ONAN_FAULT_TABLE[i].spn)), 
-                                   pgm_read_byte(&(ONAN_FAULT_TABLE[i].fmi)), 
-                                   (const char*)pgm_read_ptr(&(ONAN_FAULT_TABLE[i].displayLabel)));
+                        logMessage("%s (SPN %lu)\n", (const char*)pgm_read_ptr(&(ONAN_FAULT_TABLE[i].displayLabel)), pgm_read_dword(&(ONAN_FAULT_TABLE[i].spn)));
                         break;
                     }
                 }
@@ -341,47 +339,57 @@ void processHglcaNetworkFrame(twai_message_t msg) {
         }
 
         case 61444: { // PGN 61444: Electronic Engine Controller 1 (EEC1)
-            lastDataReceivedTime = millis();
-            // Bytes 4-5 (Indices 3,4): Engine Speed. Resolution: 0.125 rpm/bit
-            uint16_t rawRPM = (msg.data[4] << 8) | msg.data[3];
-            if (rawRPM != 0xFFFF) {
-                liveEngineRPM = rawRPM * 0.125;
-            }
+            lastDataReceivedTime = millis(); 
+            if (msg.data[3] != 0xFF && msg.data[4] != 0xFF) {
+                uint16_t rawRPM = (msg.data[4] << 8) | msg.data[3]; 
+                if (rawRPM < 0xFA00) { liveEngineRPM = rawRPM * 0.125; } 
+                else { liveEngineRPM = 0.0; }
+            } else { liveEngineRPM = 0.0; }
             break;
         }
 
-        case 64409: { // PGN 64409: DC/AC Accessory Inverter 1 Temperatures
-            lastDataReceivedTime = millis();
-            // Byte 3 (Index 2): Power Electronics Temp. Resolution: 1 C/bit, Offset: -40 C
-            uint8_t rawTemp = msg.data[2];
-            if (rawTemp != 0xFF) {
-                liveInverterTemp = (int16_t)rawTemp - 40;
-            }
+        case 64409: { // PGN 64409: Inverter Temperatures (DCAC_AI1_T)
+            lastDataReceivedTime = millis(); 
+            if (msg.data[2] != 0xFF) {
+                liveInverterTemp = (int16_t)msg.data[2] - 40; // Byte 3 / Index 2
+            } else { liveInverterTemp = 0; }
             break;
         }
 
-        case 65030: { // PGN 65030: Generator Average Basic AC Quantities (GAAC)
-            lastDataReceivedTime = millis();
-            // Bytes 3-4 (Indices 2,3): Line-Neutral AC RMS Voltage. Resolution: 1 V/bit
-            uint16_t rawACV = (msg.data[3] << 8) | msg.data[2];
-            if (rawACV != 0xFFFF) { liveACVoltage = rawACV; }
+        case 65030: { // PGN 65030: Basic AC Quantities (GAAC)
+            lastDataReceivedTime = millis(); 
+            if (msg.data[2] != 0xFF && msg.data[3] != 0xFF) {
+                liveACVoltage = (msg.data[3] << 8) | msg.data[2];
+            } else { liveACVoltage = 0; }
 
-            // Bytes 5-6 (Indices 4,5): Average AC Frequency. Resolution: 1/128 Hz/bit
-            uint16_t rawHz = (msg.data[5] << 8) | msg.data[4];
-            if (rawHz != 0xFFFF) {
-                liveACFrequency = rawHz * (1.0 / 128.0);
-            }
+            if (msg.data[4] != 0xFF && msg.data[5] != 0xFF) {
+                uint16_t rawHz = (msg.data[5] << 8) | msg.data[4];
+                if (rawHz < 0xFA00) { liveACFrequency = rawHz * (1.0 / 128.0); } 
+                else { liveACFrequency = 0.0; }
+            } else { liveACFrequency = 0.0; }
             break;
         }
 
         case 65271: { // PGN 65271: Vehicle Electrical Power 1 (VEP1)
-            lastDataReceivedTime = millis();
-            // Bytes 5-6 (Indices 4,5): Battery Potential. Resolution: 0.05 V/bit
-            uint16_t rawVolts = (msg.data[5] << 8) | msg.data[4];
-            if (rawVolts != 0xFFFF) {
-                liveBatteryVoltage = rawVolts * 0.05;
+            lastDataReceivedTime = millis(); 
+            
+            // ✅ FIXED SYNTAX ERROR: Safely parses Byte 5 [4] and Byte 6 [5]
+            uint8_t lowByte  = msg.data[4]; 
+            uint8_t highByte = msg.data[5];
+            
+            // If both bytes are 0xFF (255), the generator is sending uninitialized padding fields
+            if (lowByte != 0xFF || highByte != 0xFF) {
+                // Assemble the 16-bit word using correct J1939 Little Endian ordering
+                uint16_t rawVolts = (highByte << 8) | lowByte;
+                
+                // Page 44: Resolution is exactly 0.05 V per bit
+                liveBatteryVoltage = rawVolts * 0.05; 
+            } else { 
+                liveBatteryVoltage = 0.0; 
             }
             break;
         }
+
+
     }
 }

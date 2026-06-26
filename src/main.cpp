@@ -110,13 +110,15 @@ const int ONAN_DB_COUNT = sizeof(ONAN_FAULT_TABLE) / sizeof(ONAN_FAULT_TABLE[0])
 
 void processHglcaNetworkFrame(twai_message_t msg);
 void twaiBackgroundEngine(void *pvParameters);
+// HTML UI with updated layout flex rules to ensure text blocks align perfectly
 const char htmlDashboard[] PROGMEM = "<!DOCTYPE html><html><head>"
 "<meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>"
 "<style>body{font-family:sans-serif; background:#121212; color:#e0e0e0; padding:15px; text-align:center;}"
 "h2, h3{color:#00adb5; margin:10px 0;} .box{background:#1e1e1e; padding:15px; border-radius:8px; margin:0 auto 15px auto; max-width:750px; border:1px solid #333;}"
 ".grid{display:flex; flex-wrap:wrap; gap:10px; justify-content:center; max-width:750px; margin:0 auto 15px auto;}"
-".metric-card{background:#1e1e1e; border:1px solid #333; border-radius:6px; padding:12px; width:135px; text-align:center; box-sizing:border-box;}"
-".val{font-size:18px; font-weight:bold; color:#00adb5; margin-top:5px;}"
+".metric-card{background:#1e1e1e; border:1px solid #333; border-radius:6px; padding:12px; width:135px; height:85px; text-align:center; box-sizing:border-box; display:flex; flex-direction:column; justify-content:space-between;}"
+".lbl{font-size:13px; color:#aaa; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}"
+".val{font-size:18px; font-weight:bold; color:#00adb5; margin-top:2px;}"
 "pre{background:#000; color:#0f0; padding:12px; border-radius:5px; overflow-y:scroll; height:250px; font-family:monospace; text-align:left; white-space:pre-wrap; margin-bottom:10px;}"
 "input[type=file]{background:#2d2d2d; padding:6px; border-radius:4px; color:#fff; border:1px solid #444;}"
 "input[type=button], .btn-action{background:#00adb5; color:#fff; border:none; padding:10px 15px; border-radius:4px; cursor:pointer; font-weight:bold; text-decoration:none; display:inline-block; margin:4px;}"
@@ -126,11 +128,11 @@ const char htmlDashboard[] PROGMEM = "<!DOCTYPE html><html><head>"
 "#status-msg{margin-top:8px; font-weight:bold; color:#ffb703;}</style></head><body>"
 "<h2>Cummins HGLCA Live J1939 Dashboard v2.0</h2>"
 "<div class='grid'>"
-" <div class='metric-card'><div>🔋 Battery Input</div><div class='val' id='m-volts'>0.0V</div></div>"
-" <div class='metric-card'><div>⚙️ Engine Speed</div><div class='val' id='m-rpm'>0 RPM</div></div>"
-" <div class='metric-card'><div>🔥 Inverter Core</div><div class='val' id='m-temp'>0&deg;C</div></div>"
-" <div class='metric-card'><div>⚡ AC Output</div><div class='val' id='m-acv'>0V</div></div>"
-" <div class='metric-card'><div>🌀 Frequency</div><div class='val' id='m-hz'>0.0Hz</div></div>"
+" <div class='metric-card'><div class='lbl'>🔋 Battery Input</div><div class='val' id='m-volts'>0.0V</div></div>"
+" <div class='metric-card'><div class='lbl'>⚙️ Engine Speed</div><div class='val' id='m-rpm'>0 RPM</div></div>"
+" <div class='metric-card'><div class='lbl'>🔥 Inverter Core</div><div class='val' id='m-temp'>0&deg;C</div></div>"
+" <div class='metric-card'><div class='lbl'>⚡ AC Output</div><div class='val' id='m-acv'>0V</div></div>"
+" <div class='metric-card'><div class='lbl'>🌀 Frequency</div><div class='val' id='m-hz'>0.0Hz</div></div>"
 "</div>"
 "<div class='box'><h3>Live System Console Logs</h3><pre id='terminal'>Synchronizing multi-PGN J1939 data loops...</pre>"
 "<a href='/download-log' download='onan_generator_log.txt' class='btn-action'>💾 Download Log</a>"
@@ -156,19 +158,36 @@ const char htmlDashboard[] PROGMEM = "<!DOCTYPE html><html><head>"
 "}"
 "setInterval(pollTelemetry, 500); function controlGenerator(route){ fetch(route, {method:'POST'}); }"
 "function clearSystemLog(){ if(confirm('Wipe saved flash logs?')){ fetch('/clear-log',{method:'POST'}).then(() => { term.innerHTML=''; }); } }"
-"function uploadFile(){ var fi=document.getElementById('file-input'); if(fi.files.length===0){alert('Select .bin!');return;} jsUpdating=true; var fd=new FormData(); fd.append('update',fi.files[0]); var xhr=new XMLHttpRequest(); xhr.open('POST','/update',true); document.getElementById('prg-wrapper').style.display='block'; document.getElementById('status-msg').innerText='Uploading firmware...';"
+"function uploadFile(){ var fi=document.getElementById('file-input'); if(fi.files.length===0){alert('Select .bin!');return;} jsUpdating=true; var fd=new FormData(); fd.append('update',fi.files); var xhr=new XMLHttpRequest(); xhr.open('POST','/update',true); document.getElementById('prg-wrapper').style.display='block'; document.getElementById('status-msg').innerText='Uploading firmware...';"
 "xhr.upload.addEventListener('progress',function(e){ if(e.lengthComputable){ var p=Math.round((e.loaded/e.total)*100); document.getElementById('prg-bar').style.width=p+'%'; document.getElementById('prg-bar').innerText=p+'%'; } });"
 "xhr.onload=function(){ if(xhr.status===200){ document.getElementById('status-msg').style.color='#00ff00'; document.getElementById('status-msg').innerText='✅ Success! Rebooting...'; }else{ document.getElementById('status-msg').innerText='❌ Failed: '+xhr.responseText; jsUpdating=false; } }; xhr.send(fd); }</script></body></html>";
+
 void setup() {
     Serial.begin(115200);
     LittleFS.begin(true);
     pinMode(STATUS_LED_PIN, OUTPUT);
     logMutex = xSemaphoreCreateMutex();
 
+    esp_bt_controller_disable();
+    esp_bt_controller_deinit();
+    
+    // 1. Force the internal radio architecture into clear, absolute Access Point mode
     WiFi.mode(WIFI_AP);
-    WiFi.softAP("Cummins_Live_Dashboard", "12345678", 6, false, 2);
+    delay(500); // Small stability delay to let the radio engine state settle
+
+    // 2. Launch the SoftAP using only the bare essentials (Name & Password)
+    // This allows the ESP32 internal firmware to automatically pick stable network defaults
+    if (WiFi.softAP("Cummins_Live_Dashboard", "12345678")) {
+        Serial.println("📡 Wi-Fi Access Point successfully brought online!");
+    } else {
+        Serial.println("❌ Critical Error: Wi-Fi Access Point failed to initialize!");
+    }
+
+    // 3. Lower transmission power slightly to stabilize the tiny SuperMini antenna trace line
     WiFi.setTxPower(WIFI_POWER_13dBm);
+    
     ArduinoOTA.begin();
+
 
     server.on("/", HTTP_GET, []() { server.send(200, "text/html", htmlDashboard); });
     server.on("/telemetry", HTTP_GET, []() {
@@ -194,10 +213,10 @@ void setup() {
     });
     server.on("/clear-log", HTTP_POST, []() { LittleFS.remove("/log.txt"); webLogBuffer = ""; server.send(200, "text/plain", "OK"); });
 
-    // ✅ FIXED ACTION MAPPINGS: Re-mapped to match Table 7 parameters precisely
-    server.on("/gen-stop",  HTTP_POST, []() { currentActiveCommand = CMD_START; server.send(200, "text/plain", "PENDING_STOP"); });  // Table 7 ID 1
-    server.on("/gen-start", HTTP_POST, []() { currentActiveCommand = CMD_STOP;  server.send(200, "text/plain", "PENDING_START"); }); // Table 7 ID 2
-    server.on("/gen-prime", HTTP_POST, []() { currentActiveCommand = CMD_PRIME; server.send(200, "text/plain", "PENDING_PRIME"); });
+    // ✅ FIXED & RE-ALIGNED ACTION MAPPINGS (Corrects the inverted commands)
+    server.on("/gen-stop",  HTTP_POST, []() { currentActiveCommand = CMD_STOP;  server.send(200, "text/plain", "PENDING_STOP"); });  // Map to Stop (0xF1)
+    server.on("/gen-start", HTTP_POST, []() { currentActiveCommand = CMD_START; server.send(200, "text/plain", "PENDING_START"); }); // Map to Start (0xF2)
+    server.on("/gen-prime", HTTP_POST, []() { currentActiveCommand = CMD_PRIME; server.send(200, "text/plain", "PENDING_PRIME"); }); // Map to Prime (0xF1 Loop)
 
     twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(CTX_PIN, CRX_PIN, TWAI_MODE_NORMAL);
     g_config.rx_queue_len = 64;
@@ -233,7 +252,11 @@ void twaiBackgroundEngine(void *pvParameters) {
     tx_msg.extd = 1;
     tx_msg.rtr = 0;
     tx_msg.data_length_code = 8;
-    tx_msg.identifier = 0x0CE0FF01; // Base control identifier allocation
+    
+    // ✅ RE-ALIGNED J1939 CONTROL IDENTIFIER:
+    // Shifting to 0x18EA2127 -> Priority 6, PGN 59904 (0xEA00), Target: Inverter Controller (0x21), Source: Tool (0x27)
+    // If 0x21 does not respond, alternative target profiles use 0x18EA0027 (Targeting Engine 0x00 directly)
+    tx_msg.identifier = 0x18EA2127; 
     
     unsigned long lastTxTime = 0;
     unsigned long commandStartTime = 0;
@@ -243,33 +266,37 @@ void twaiBackgroundEngine(void *pvParameters) {
         if (isUpdating) { vTaskDelay(pdMS_TO_TICKS(100)); continue; }
         GenControlCommand activeCmd = currentActiveCommand;
 
-        if (activeCmd != CMD_RELEASE && previousCommand == CMD_RELEASE) { commandStartTime = millis(); }
+        if (activeCmd != CMD_RELEASE && previousCommand == CMD_RELEASE) { 
+            commandStartTime = millis(); 
+        }
         previousCommand = activeCmd;
 
         if (activeCmd != CMD_RELEASE && (millis() - commandStartTime >= 3000)) { 
             currentActiveCommand = CMD_RELEASE; 
             activeCmd = CMD_RELEASE; 
-            logMessage("\n⚠️ [REMOTE] Safety clear window reached. Releasing lines to IDLE.\n");
+            logMessage("\n⚠️ [REMOTE] Safety Timeout window reached. Bus lines released to IDLE.\n");
         }
 
         unsigned long now = millis();
         if (now - lastTxTime >= 100) {
             lastTxTime = now;
+            
+            // Re-apply SAE standard padding rules to trailing arrays
             for(int i = 1; i < 8; i++) { tx_msg.data[i] = 0xFF; }
             
-            // ✅ FIXED CONTROL NIBBLE: Mask command bits into lower 4 bits (0x0F) and add 0xF0 padding per Section 6.3.2
-            if (activeCmd == CMD_START) {
-                tx_msg.data[0] = 0xF2; // Table 7 Decimal 2 -> Start
-            } else if (activeCmd == CMD_STOP) {
-                tx_msg.data[0] = 0xF1; // Table 7 Decimal 1 -> Stop
+            // Map actions to match Table 7 requirements
+            if (activeCmd == CMD_STOP) {
+                tx_msg.data[0] = 0xF1; // Decimal 1 -> Stop Engine Command
+            } else if (activeCmd == CMD_START) {
+                tx_msg.data[0] = 0xF2; // Decimal 2 -> Start / Crank Engine Command
             } else if (activeCmd == CMD_PRIME) {
-                tx_msg.data[0] = 0xF1; // Prime uses the hardware stop circuit grounding layout
+                tx_msg.data[0] = 0xF1; // Priming uses Table 7 Key 1 (Stop) held down continuously
             } else {
-                tx_msg.data[0] = 0xF0; // None / Null idle state
+                tx_msg.data[0] = 0xF0; // Default idle clear state mask
             }
 
             if (activeCmd != CMD_RELEASE) { 
-                logMessage("\n📡 [REMOTE] Broadcasting Table 7 Control Frame: 0x%02X\n", tx_msg.data[0]);
+                logMessage("\n📡 [REMOTE] Broadcasting Table 7 Control Frame: 0x%02X to Target 0x21\n", tx_msg.data[0]);
                 twai_transmit(&tx_msg, pdMS_TO_TICKS(5)); 
             }
         }
@@ -280,6 +307,8 @@ void twaiBackgroundEngine(void *pvParameters) {
         vTaskDelay(pdMS_TO_TICKS(5));
     }
 }
+
+
 
 void processHglcaNetworkFrame(twai_message_t msg) {
     // Isolate the Parameter Group Number (PGN) from the 29-bit J1939 Identifier

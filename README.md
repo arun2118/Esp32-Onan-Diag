@@ -233,7 +233,7 @@ To protect the ESP32-C3 from high-voltage logic leakage and bypass critical boot
 | **`VCC`** | **`5V` / `VBUS`** | 5V Power Supply | Drives high-output CAN transmission coils |
 | **`GND`** | **`GND`** | Ground Reference | Common ground plane bridge |
 | **`TXD`** | **`GPIO1` (TX)** | 3.3V Logic Input | Passes outgoing web dashboard command states |
-| **`RXD`** | **`GPIO2` (RX)** | 3.3V Logic Output | **Safe Pin 2:** Prevents silent bootloader locking |
+| **`RXD`** | **`GPIO0` (RX)** | 3.3V Logic Output | **Safe Pin 0:** Alt GPIO2 if bootloader locks |
 | **`VIO` / `V_LEV`** | **`3.3V`** | 3.3V Logic Ref | **Crucial:** Clamps RX line signals safely to 3.3V |
 
 > ⚠️ **Power Architecture Rule**: The `STBY` (Standby) pin on the Adafruit CAN Pal package is internally tied down to `GND` via a surface-mount resistor trace on the circuit board layout. **The transceiver chip is permanently physically awake and unlocked.** Do not manually ground it.

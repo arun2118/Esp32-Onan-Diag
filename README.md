@@ -208,3 +208,74 @@ app0,     app,  ota_0,   0x10000,  0x1C0000,
 app1,     app,  ota_1,   0x1D0000, 0x1C0000,
 spiffs,   data, spiffs,  0x390000, 0x60000,
 ```
+## 🔧 Hardware Upgrade: Adafruit CAN Pal Deployment
+
+The system has been upgraded from the passive 3.3V SN65HVD230 breakout board to the robust, vehicle-grade **[Adafruit CAN Pal (TJA1051T/3)](https://adafruit.com)**. This single-board transceiver solution bridges the 3.3V logic of the ESP32-C3 with the heavy industrial 5.0V differential signaling constraints required by the Cummins HGLCA generator.
+
+### 🔌 Safe 5-Wire Interfacing Pinout
+
+To protect the ESP32-C3 from high-voltage logic leakage and bypass critical bootloader strapping pin locks (like `GPIO0`), the hardware loop must be wired **exactly** as follows:
+
+| Adafruit CAN Pal Pin | ESP32-C3 Dev Board Pin | Signal Type | Purpose |
+| :--- | :--- | :--- | :--- |
+| **`VCC`** | **`5V` / `VBUS`** | 5V Power Supply | Drives high-output CAN transmission coils |
+| **`GND`** | **`GND`** | Ground Reference | Common ground plane bridge |
+| **`TXD`** | **`GPIO1` (TX)** | 3.3V Logic Input | Passes outgoing web dashboard command states |
+| **`RXD`** | **`GPIO2` (RX)** | 3.3V Logic Output | **Safe Pin 2:** Prevents silent bootloader locking |
+| **`VIO` / `V_LEV`** | **`3.3V`** | 3.3V Logic Ref | **Crucial:** Clamps RX line signals safely to 3.3V |
+
+> ⚠️ **Power Architecture Rule**: The `STBY` (Standby) pin on the Adafruit CAN Pal package is internally tied down to `GND` via a surface-mount resistor trace on the circuit board layout. **The transceiver chip is permanently physically awake and unlocked.** Do not manually ground it.
+
+---
+
+## 📊 Deep J1939 Multi-PGN Telemetry Layout
+
+Instead of tracking parameters inside a single proprietary message, the Cummins HGLCA generator distributes real-time metrics across distinct standard SAE J1939 Parameter Group Numbers (PGNs). The firmware uses an **Accept All Pass Filter** to decode the complete engine profile seamlessly:
+
+```text
+               [ CUMMINS INVERTER POWERTRAIN NETWORK CAN-BUS TRUNK ]
+                                        |
+      +-----------------+---------------+----------------+-----------------+
+
+      |                 |               |                |                 |
+  PGN 65280         PGN 61444       PGN 64409        PGN 65030         PGN 65271
+(Genset State)    (Engine Speed)  (Inverter Temp)  (Basic AC Quant)   (Vehicle Power)
+  [Byte 0]         [Bytes 4-5]       [Byte 2]       [Bytes 2-5]        [Bytes 4-5]
+
+      |                 |               |                |                 |
+      +-----------------+---------------+----------------+-----------------+
+                                        |
+                        [ ESP32-C3 MULTI-PGN ENGINE ]
+```
+
+### 🔍 Decoded Parameter Matrix
+
+1. **Genset State / Operational Status (PGN 65280)**
+   * **Byte Location**: Byte 0 (Index `0`)
+   * **States**: `1` = Stopped / Inactive, `2` = Starting / Cranking, `3` = Running / Producing AC, `5` = Fuel Priming, `6` = Fault Tripped.
+2. **Engine Speed / RPM (PGN 61444 - EEC1)**
+   * **Byte Location**: Bytes 4 and 5 (Indices `3` and `4`)
+   * **Resolution**: `0.125 RPM/bit`, Little Endian Byte Alignment.
+3. **Inverter Module Temperature (PGN 64409 - DCAC_AI1_T)**
+   * **Byte Location**: Byte 3 (Index `2`)
+   * **Resolution**: `1 °C/bit`, Offset: `-40 °C`.
+4. **Line-to-Neutral AC RMS Voltage (PGN 65030 - GAAC)**
+   * **Byte Location**: Bytes 3 and 4 (Indices `2` and `3`)
+   * **Resolution**: `1 V/bit`, Little Endian Byte Alignment.
+5. **Average AC Frequency (PGN 65030 - GAAC)**
+   * **Byte Location**: Bytes 5 and 6 (Indices `4` and `5`)
+   * **Resolution**: `1/128 Hz/bit`, Little Endian Byte Alignment.
+6. **Battery Potential / DC Input Voltage (PGN 65271 - VEP1)**
+   * **Byte Location**: Bytes 5 and 6 (Indices `4` and `5`)
+   * **Resolution**: `0.05 V/bit`, Little Endian Byte Alignment.
+
+---
+
+## 🔒 Automated Control Fallback & Table 7 Bitmask Validation
+
+Remote control commands override physical switches using **PGN 59904 (Request Network)** directed explicitly toward the inverter controller at target address `0x21` from source tool address `0x27`. 
+
+* **Crank Start Execution**: Broadcasts `0xF2` (Table 7 Operational Command Key `2`).
+* **Kill Engine Execution**: Broadcasts `0xF1` (Table 7 Operational Command Key `1`).
+* **Fuel Lift Pump Priming**: Holds down `0xF1` (Table 7 Operational Command Key `1`), mimicking a long physical button hold to engage low-pressure priming pathways.
+* **Safety Isolation**: If a command is triggered but the generator network fails to achieve a handshake verification state within **3 seconds**, an internal watchdog auto-releases the transmission loop to `0xF0` (Idle) to prevent starter motor burnouts or system locks.

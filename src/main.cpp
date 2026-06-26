@@ -1,6 +1,6 @@
 /* 
    v2.0 voltage working
-   6-17-26 --- Cummins Multi-PGN Deep Diagnostic & Vehicle Control Interface
+   6-26-26 --- Cummins Multi-PGN Deep Diagnostic & Vehicle Control Interface
    1. Wire Connection: TX to GPIO1, RX to GPIO0 (via logic shifter), Grounded RS Pin.
    2. Open Wi-Fi on device and connect to "Cummins_Live_Dashboard" with password "12345678"
    3. Open browser and access address "192.168.4.1"

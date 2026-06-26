@@ -33,7 +33,7 @@ A lightweight, high-performance ESP32 application designed to interface with the
 </tr> 
 </table> 
 </div>
-<img width="1076" height="785" alt="Screenshot 2026-06-26 9 34 40 AM" src="https://github.com/user-attachments/assets/5b97c472-69fc-492f-8583-920183ec214e" />
+
 
 ---
 

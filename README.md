@@ -110,25 +110,55 @@ Unlike standard J1939 frameworks, the HGLCA CAN digital architecture treats its 
 
 ---
 
-## 🔌 Hardware Schematics & Pinout Mapping
+### 🔌 Hardware Schematics & Pinout Mapping
 
-The system is powered directly via the vehicle 12V battery system. A high-efficiency step-down buck converter supplies the microcontroller, while the isolated CAN transceiver utilizes the micro-controller's internal 3.3V regulator to maintain clean logic-level matching across the data bus lines.
+This project utilizes an **ESP32-C3 SuperMini** microcontroller to interface with a high-speed CAN network through a **TJA1051T/3** transceiver breakout. The system uses an external **3.3V Buck Converter** to safely step down raw automotive battery voltages to provide a single, unified logic power rail.
 
-### 📍 Hardware Pin Connection Index
+### 🖼️ Schematic Overview
 
-| Component A (Source) | Terminal / Pin Name | Component B (Destination) | Wire Color in Print | Purpose / Context |
-| :--- | :--- | :--- | :--- | :--- |
-| **12V Battery** | **[ + ] Positive** | 5V Buck Converter (IN+) | 🔴 Red | Raw Power Supply Input |
-| **12V Battery** | **[ - ] Negative** | 5V Buck Converter (IN-) | ⚫ Black | System Ground Reference |
-| **5V Buck Converter** | **[ + ] Output** | ESP32-C3 SM (**5V**) | 🧠 Pink / Magenta | Main Microcontroller Power |
-| **5V Buck Converter** | **[ - ] Output** | ESP32-C3 SM (**G**) | 🟢 Green | Common Power Ground |
-| **ESP32-C3 SuperMini** | **3.3V** | SN65HVD230 (**3V3**) | 🟠 Orange | Transceiver Power Rail |
-| **ESP32-C3 SuperMini** | **G (GND)** | SN65HVD230 (**GND**) | 🟢 Green | Integrated Logic Ground |
-| **ESP32-C3 SuperMini** | **GPIO 2** | SN65HVD230 (**CTX**) | ⚪ White / Light Blue | CAN Transmit (TX Line) |
-| **ESP32-C3 SuperMini** | **GPIO 3** | SN65HVD230 (**CRX**) | 🧬 Mint / Teal | CAN Receive (RX Line) |
-| **SN65HVD230 Board** | **CANH** | Deutsch DT-3 Pin (Pin 1) | 🍏 Olive Green | High Differential Data Line |
-| **SN65HVD230 Board** | **CANL** | Deutsch DT-3 Pin (Pin 2) | 🔵 Dark Blue | Low Differential Data Line |
-| **Deutsch Connector** | **Pin 3 (Ground)** | ESP32-C3 SM (**G**) | 🟢 Green | Network Shield / Common Ground |
+```text
+   [ 12V / 24V Battery ]
+       │            │
+       ▼ (+)        ▼ (-)
+  ┌─────────┐  ┌──────────┐
+  │ Buck IN │  │ Buck GND │──────┐
+  └─────────┘  └──────────┘      │
+       │                         │
+       ▼ (+3.3V Output)          │
+ ┌──────────┐                    │
+ │  ESP32   │                    │
+ │ SuperMini│                    │
+ └──────────┘                    ▼
+  │  │  │  │               ┌───────────┐
+  │  │  │  └──────────────>│ Transceiver│ ─── [ CAN_H / CAN_L ]
+  │  │  └─────────────────>│ TJA1051T/3 │      (Automotive Port)
+  ▼  ▼                     └───────────┘
+[ Logic Link: RX / TX ]
+```
+### 📌 Physical Pin Mapping Matrix
+
+| Source Component | Source Pin Label | Wire Color | Target Component | Target Pin Label | Purpose / Function |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Power Input** | `+` (Positive) | Orange 🟠 | **3.3V Buck Converter** | `+` Input | Raw DC input supply path |
+| **Power Input** | `-` (Negative) | Black  ⚫ | **3.3V Buck Converter** | `-` Input | Master ground return path |
+| **3.3V Buck Converter** | `+` Output | Orange 🟠 | **ESP32-C3 SuperMini** | `3.3` | Regulated main 3.3V board power |
+| **3.3V Buck Converter** | `+` Output | Orange 🟠 | **TJA1051T/3 Breakout**| `Vcc` | Transceiver logic VIO / supply rail |
+| **3.3V Buck Converter** | `-` Output | Black  ⚫ | **ESP32-C3 SuperMini** | `G` (GND) | Shared logic ground baseline |
+| **3.3V Buck Converter** | `-` Output | Black  ⚫ | **TJA1051T/3 Breakout**| `GND` | Common transceiver ground |
+| **ESP32-C3 SuperMini**| `GPIO 2` | Purple 🟣 | **TJA1051T/3 Breakout**| `TX` | Transmit logic interface |
+| **ESP32-C3 SuperMini**| `GPIO 3` | Yellow 🟡 | **TJA1051T/3 Breakout**| `RX` | Receive logic interface |
+| **TJA1051T/3 Breakout**| `CANH` | Cyan   🔵 | **Automotive Plug** | Pin 1 (Top Left) | CAN-High differential node |
+| **TJA1051T/3 Breakout**| `CANL` | Magenta🟣 | **Automotive Plug** | Pin 2 (Bottom Left) | CAN-Low differential node |
+| **Automotive Plug** | Loop Link | Green  🟢 | **TJA1051T/3 Breakout**| `SLNT` | Grounded silent-mode bypass loop |
+
+---
+
+### ⚙️ Important Hardware Notes
+
+* **Unified 3.3V Power Architecture**: In this configuration, the external buck converter supplies regulated `3.3V` directly to the `3.3` power rails of both the ESP32-C3 and the **TJA1051T/3**. The `5V` pin on the ESP32 is left completely disconnected.
+* **Safe USB Concurrent Hookup**: Because external power bypasses the ESP32's internal 5V-to-3.3V low-dropout (LDO) linear regulator completely, you can safely connect your computer's USB-C cable for debugging and code flashing while the vehicle battery is actively connected.
+* **Silent Mode Control**: To establish seamless bidirectional telemetry, the transceiver's `SLNT` pin is looped through the automotive plug terminal block directly back to common `GND` via a static hardware bridge. This overrides passive mode configurations and forces an active, normal-write system state.
+
 
 ---
 

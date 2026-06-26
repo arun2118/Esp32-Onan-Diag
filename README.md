@@ -23,7 +23,13 @@ A lightweight, high-performance ESP32 application designed to interface with the
 <td align="center" valign="top"> 
 <img src="https://github.com/user-attachments/assets/a7a3e850-8a35-4710-a52f-0cc2abd3cd3e" alt="Screenshot 2026-06-11 135819" height="250" /><br /> 
 <sub><b>Onan CAN</b></sub> 
+</td>
+
+<td align="center" valign="bottom"> 
+<img src="https://github.com/user-attachments/assets/5b97c472-69fc-492f-8583-920183ec214e" alt="Screenshot 2026-06-26 9 34 40 AM" height="250" /><br /> 
+<sub><b>Web Dashboard</b></sub> 
 </td> 
+ 
 </tr> 
 </table> 
 </div>

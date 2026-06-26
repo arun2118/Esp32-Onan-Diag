@@ -208,6 +208,11 @@ app0,     app,  ota_0,   0x10000,  0x1C0000,
 app1,     app,  ota_1,   0x1D0000, 0x1C0000,
 spiffs,   data, spiffs,  0x390000, 0x60000,
 ```
+
+
+--------------------- 6/26/2026--------------------------
+
+
 ## 🔧 Hardware Upgrade: Adafruit CAN Pal Deployment
 
 The system has been upgraded from the passive 3.3V SN65HVD230 breakout board to the robust, vehicle-grade **[Adafruit CAN Pal (TJA1051T/3)](https://adafruit.com)**. This single-board transceiver solution bridges the 3.3V logic of the ESP32-C3 with the heavy industrial 5.0V differential signaling constraints required by the Cummins HGLCA generator.

@@ -252,11 +252,7 @@ void twaiBackgroundEngine(void *pvParameters) {
     tx_msg.extd = 1;
     tx_msg.rtr = 0;
     tx_msg.data_length_code = 8;
-    
-    // ✅ RE-ALIGNED J1939 CONTROL IDENTIFIER:
-    // Shifting to 0x18EA2127 -> Priority 6, PGN 59904 (0xEA00), Target: Inverter Controller (0x21), Source: Tool (0x27)
-    // If 0x21 does not respond, alternative target profiles use 0x18EA0027 (Targeting Engine 0x00 directly)
-    tx_msg.identifier = 0x18EA2127; 
+    tx_msg.identifier = 0x0CE0FF27; // Locked onto PGN 57599 with Source Address 0x27
     
     unsigned long lastTxTime = 0;
     unsigned long commandStartTime = 0;
@@ -274,29 +270,29 @@ void twaiBackgroundEngine(void *pvParameters) {
         if (activeCmd != CMD_RELEASE && (millis() - commandStartTime >= 3000)) { 
             currentActiveCommand = CMD_RELEASE; 
             activeCmd = CMD_RELEASE; 
-            logMessage("\n⚠️ [REMOTE] Safety Timeout window reached. Bus lines released to IDLE.\n");
+            logMessage("\n⚠️ [REMOTE] Safety clear window reached. Releasing lines to IDLE.\n");
         }
 
         unsigned long now = millis();
         if (now - lastTxTime >= 100) {
             lastTxTime = now;
             
-            // Re-apply SAE standard padding rules to trailing arrays
+            // 1. Properly fill trailing bytes 1-7 with standard J1939 padding
             for(int i = 1; i < 8; i++) { tx_msg.data[i] = 0xFF; }
             
-            // Map actions to match Table 7 requirements
+            // 2. ✅ FIXED SYNTAX ERROR: Explicitly target index [0] of the data array
             if (activeCmd == CMD_STOP) {
-                tx_msg.data[0] = 0xF1; // Decimal 1 -> Stop Engine Command
+                tx_msg.data[0] = 0xF1; // Key 1 -> Stop Engine / Ground Run Loop
             } else if (activeCmd == CMD_START) {
-                tx_msg.data[0] = 0xF2; // Decimal 2 -> Start / Crank Engine Command
+                tx_msg.data[0] = 0xF2; // Key 2 -> Crank / Start Engine
             } else if (activeCmd == CMD_PRIME) {
-                tx_msg.data[0] = 0xF1; // Priming uses Table 7 Key 1 (Stop) held down continuously
+                tx_msg.data[0] = 0xF1; // Priming uses the continuous Stop key sequence
             } else {
-                tx_msg.data[0] = 0xF0; // Default idle clear state mask
+                tx_msg.data[0] = 0xF0; // Default idle baseline mask
             }
 
             if (activeCmd != CMD_RELEASE) { 
-                logMessage("\n📡 [REMOTE] Broadcasting Table 7 Control Frame: 0x%02X to Target 0x21\n", tx_msg.data[0]);
+                logMessage("\n📡 [REMOTE] Broadcasting PGN 57599 Matrix: 0x%02X from Tool Address 0x27\n", tx_msg.data[0]);
                 twai_transmit(&tx_msg, pdMS_TO_TICKS(5)); 
             }
         }
@@ -307,6 +303,8 @@ void twaiBackgroundEngine(void *pvParameters) {
         vTaskDelay(pdMS_TO_TICKS(5));
     }
 }
+
+
 
 
 

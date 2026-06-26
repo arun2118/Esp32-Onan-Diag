@@ -17,7 +17,7 @@ A lightweight, high-performance ESP32 application designed to interface with the
 <table> 
 <tr> 
 <td align="center" valign="top"> 
-<img src="https://github.com/user-attachments/assets/8c418f4c-76ec-45f3-a1aa-15ad97b0558e" alt="circuit_image" height="250" /><br /> 
+<img src="https://github.com/user-attachments/assets/60e86fe0-6b3c-4bd5-9706-b0d6310e5aa3" alt="circuit_image" height="250" /><br /> 
 <sub><b>Circuit Diagram</b></sub> 
 </td> 
 <td align="center" valign="top"> 

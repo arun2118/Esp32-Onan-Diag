@@ -18,7 +18,7 @@
 
 #define CTX_PIN GPIO_NUM_1
 #define CRX_PIN GPIO_NUM_0
-#define STATUS_LED_PIN GPIO_NUM_8
+#define STATUS_LED_PIN GPIO_NUM_48
 
 unsigned long lastLedToggle = 0;
 unsigned long lastDataReceivedTime = 0;

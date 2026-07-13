@@ -252,11 +252,7 @@ void twaiBackgroundEngine(void *pvParameters) {
     tx_msg.extd = 1;
     tx_msg.rtr = 0;
     tx_msg.data_length_code = 8;
-    
-    // ✅ RE-ALIGNED TO FACTORY PANEL IDENTITY: 
-    // Shifted from 0x0CE0FF27 to 0x0CE0FF11 (Source Address 0x11 - Standard Remote Panel / Cluster Overlay)
-    // This allows the Cummins ECU to accept the command as a standard physical dash input.
-    tx_msg.identifier = 0x0CE0FF11; 
+    tx_msg.identifier = 0x0CE0FF11; // Priority 3, PGN 57599, Source Address 0x11
     
     unsigned long lastTxTime = 0;
     unsigned long commandStartTime = 0;
@@ -266,37 +262,27 @@ void twaiBackgroundEngine(void *pvParameters) {
         if (isUpdating) { vTaskDelay(pdMS_TO_TICKS(100)); continue; }
         GenControlCommand activeCmd = currentActiveCommand;
 
-        if (activeCmd != CMD_RELEASE && previousCommand == CMD_RELEASE) { 
-            commandStartTime = millis(); 
-        }
+        if (activeCmd != CMD_RELEASE && previousCommand == CMD_RELEASE) { commandStartTime = millis(); }
         previousCommand = activeCmd;
 
         if (activeCmd != CMD_RELEASE && (millis() - commandStartTime >= 3000)) { 
             currentActiveCommand = CMD_RELEASE; 
             activeCmd = CMD_RELEASE; 
-            logMessage("\n⚠️ [REMOTE] Safety clear window reached. Releasing lines to IDLE.\n");
+            logMessage("\n⚠️ [REMOTE] Safety Clear. Releasing line to IDLE.\n");
         }
 
         unsigned long now = millis();
         if (now - lastTxTime >= 100) {
             lastTxTime = now;
-            
-            // Fill trailing bytes 1-7 with standard J1939 padding
             for(int i = 1; i < 8; i++) { tx_msg.data[i] = 0xFF; }
             
-            // Table 7 Command Configurations mapped to Index 0
-            if (activeCmd == CMD_STOP) {
-                tx_msg.data[0] = 0xF1; // Key 1 -> Stop Engine / Ground Run Loop
-            } else if (activeCmd == CMD_START) {
-                tx_msg.data[0] = 0xF2; // Key 2 -> Crank / Start Engine
-            } else if (activeCmd == CMD_PRIME) {
-                tx_msg.data[0] = 0xF1; // Priming uses the continuous Stop key sequence
-            } else {
-                tx_msg.data[0] = 0xF0; // Default idle baseline mask
-            }
+            if (activeCmd == CMD_STOP)       { tx_msg.data[0] = 0xF1; } 
+            else if (activeCmd == CMD_START)  { tx_msg.data[0] = 0xF2; } 
+            else if (activeCmd == CMD_PRIME)  { tx_msg.data[0] = 0xF1; } 
+            else                              { tx_msg.data[0] = 0xF0; }
 
             if (activeCmd != CMD_RELEASE) { 
-                logMessage("\n📡 [REMOTE] Broadcasting PGN 57599 Matrix: 0x%02X from Panel Address 0x11\n", tx_msg.data[0]);
+                logMessage("\n📡 [REMOTE] Broadcasting J1939 Command: 0x%02X from Panel Address 0x11\n", tx_msg.data[0]);
                 twai_transmit(&tx_msg, pdMS_TO_TICKS(5)); 
             }
         }
@@ -307,6 +293,151 @@ void twaiBackgroundEngine(void *pvParameters) {
         vTaskDelay(pdMS_TO_TICKS(5));
     }
 }
+
+void processHglcaNetworkFrame(twai_message_t msg) {
+    uint32_t pgn = (msg.identifier >> 8) & 0x3FFFF;
+    if (((msg.identifier >> 16) & 0xFF) < 240) { pgn = (msg.identifier >> 8) & 0x3FF00; }
+
+    switch(pgn) {
+        case 65226: { // 🚨 PGN 65226 - J1939 DM1 Active Diagnostic Trouble Codes
+            lastDataReceivedTime = millis();
+            
+            // Extract standard J1939 SPN and FMI bitfields from the array
+            uint32_t parsedSpn = ((msg.data[2] & 0xE0) << 11) | (msg.data[1] << 8) | msg.data[0];
+            uint8_t parsedFmi = msg.data[2] & 0x1F;
+
+            static uint32_t lastParsedSpn = 0;
+            static uint8_t lastParsedFmi = 0;
+
+            if (parsedSpn != lastParsedSpn || parsedFmi != lastParsedFmi) {
+                lastParsedSpn = parsedSpn;
+                lastParsedFmi = parsedFmi;
+
+                logMessage("\n⚠️ [J1939 FAULT EVENT] Active DTC -> SPN: %lu | FMI: %d \n", parsedSpn, parsedFmi);
+                logMessage("🔧 [MANUAL REPAIR GUIDE DATA MATCHED]:\n");
+
+                // --- 10.2.15 CODE 36 MATRIX ---
+                if (parsedSpn == 110 && parsedFmi == 2) {
+                    logMessage(" >> Factory Code : Code 36 (Abnormal Genset Shutdown)\n");
+                    logMessage(" >> Root Cause   : Uncommanded Mechanical Stall / Fuel Loss.\n");
+                    logMessage(" >> Action Plan  : 1. Check fuel supply. 2. Verify lines. 3. Check lift/IPM pump.\n");
+                } 
+                else if (parsedSpn == 1268 && parsedFmi == 4) {
+                    logMessage(" >> Factory Code : Code 36 (Abnormal Genset Shutdown)\n");
+                    logMessage(" >> Root Cause   : Primary Winding Open Circuit on Ignition Coil.\n");
+                    logMessage(" >> Action Plan  : 1. Check connectors. 2. Check coil per section 8.6.1.\n");
+                } 
+                else if (parsedSpn == 1268 && parsedFmi == 3) {
+                    logMessage(" >> Factory Code : Code 36 (Abnormal Genset Shutdown)\n");
+                    logMessage(" >> Root Cause   : Overcurrent from ECU for Ignition Coil.\n");
+                    logMessage(" >> Action Plan  : 1. Replace ECU. 2. Replace the wiring harness.\n");
+                } 
+                
+                // --- 10.2.19 CODE 52 MATRIX ---
+                else if (parsedSpn == 931 && parsedFmi == 2) {
+                    logMessage(" >> Factory Code : Code 52 (Fuel Injector / IPM Pump Circuit Fault)\n");
+                    logMessage(" >> Root Cause   : Fuel pump open circuit, overcurrent, short, or driver over-temp.\n");
+                    logMessage(" >> Action Plan  : 1. Replace the fuel pump. 2. Replace the ECU.\n");
+                }
+                else if (parsedSpn == 651 && parsedFmi == 2) {
+                    logMessage(" >> Factory Code : Code 52 (Fuel Injector / IPM Pump Circuit Fault)\n");
+                    logMessage(" >> Root Cause   : Injector open circuit, overcurrent, short, or driver over-temp.\n");
+                    logMessage(" >> Action Plan  : 1. Replace the fuel injector. 2. Replace the ECU.\n");
+                }
+
+                // --- 10.2.22 CODE 57 MATRIX ---
+                else if (parsedSpn == 4083 && parsedFmi == 8) {
+                    logMessage(" >> Factory Code : Code 57 (Over Prime / Fuel Pressure / LPG Solenoid Valve Fault)\n");
+                    logMessage(" >> Root Cause   : Prime fuel active for more than 3 minutes continuously.\n");
+                    logMessage(" >> Action Plan  : 1. Release STOP key to stop priming fuel immediately.\n");
+                }
+                else if (parsedSpn == 1390 && parsedFmi == 2) {
+                    logMessage(" >> Factory Code : Code 57 (Over Prime / Fuel Pressure / LPG Solenoid Valve Fault)\n");
+                    logMessage(" >> Root Cause   : High or low LP fuel pressure sensor circuit voltage outlier.\n");
+                    logMessage(" >> Action Plan  : 1. Check LPG tank pressure (9-13 in WC). 2. Replace LP pressure sensor. 3. Replace ECU.\n");
+                }
+                else if (parsedSpn == 6181 && parsedFmi == 2) {
+                    logMessage(" >> Factory Code : Code 57 (Over Prime / Fuel Pressure / LPG Solenoid Valve Fault)\n");
+                    logMessage(" >> Root Cause   : LP Solenoid Valve open circuit, short to ground, overcurrent, or overheat.\n");
+                    logMessage(" >> Action Plan  : 1. Check solenoid coil for opens/shorts. 2. Check wiring connections. 3. Replace solenoid if current exceeds 1.6A-3A. 4. Replace ECU if driver temp exceeds 155-185C.\n");
+                }
+                
+                // --- FALLBACK UNMAPPED ALERTS ---
+                else {
+                    logMessage(" >> Factory Code : Unknown / Variant Sub-Fault Code\n");
+                    logMessage(" >> Action Plan  : Lookup standard manual criteria for SPN %lu, FMI %d.\n", parsedSpn, parsedFmi);
+                }
+                logMessage("----------------------------------------------------------------------\n");
+            }
+            break;
+        }
+
+
+        case 65280: { // Proprietary Status Loop
+            lastDataReceivedTime = millis();
+            uint8_t engineState = msg.data[0];
+            globalGensetState = engineState;
+
+            static uint8_t lastEngineState = 0xFF;
+            if (engineState != lastEngineState) {
+                lastEngineState = engineState;
+                logMessage("\n⚡ [STATE CHANGE] Status: ");
+                switch(engineState) {
+                    case 0: logMessage("Ready / Standby (AC Disconnected)\n"); break;
+                    case 1: logMessage("Stopped / Engine Inactive\n"); break;
+                    case 2: logMessage("Starting / Cranking Engine\n"); break;
+                    case 3: logMessage("Running / Producing AC Power\n"); break;
+                    case 4: logMessage("Warm-up Mode / Automatic Choke\n"); break;
+                    case 5: logMessage("FUEL PRIMING RUNNING (Lift Pump Engaged)\n"); break;
+                    case 6: logMessage("CRITICAL CRASH / FAULT SHUTDOWN TRIGGERED\n"); break;
+                    default: logMessage("Unknown (0x%02X)\n", engineState); break;
+                }
+
+                if ((engineState == 3 && currentActiveCommand == CMD_START) ||
+                    (engineState == 1 && currentActiveCommand == CMD_STOP)) {
+                    currentActiveCommand = CMD_RELEASE;
+                    logMessage("✔ [REMOTE] Control Handshake Complete.\n");
+                }
+            }
+            break;
+        }
+
+        case 61444: { // Engine Speed
+            lastDataReceivedTime = millis();
+            if (msg.data[3] != 0xFF && msg.data[4] != 0xFF) {
+                uint16_t rawRPM = (msg.data[4] << 8) | msg.data[3];
+                if (rawRPM < 0xFA00) { liveEngineRPM = rawRPM * 0.125; } else { liveEngineRPM = 0.0; }
+            } else { liveEngineRPM = 0.0; }
+            break;
+        }
+
+        case 64409: { // Inverter Temp
+            lastDataReceivedTime = millis();
+            if (msg.data[2] != 0xFF) { liveInverterTemp = (int16_t)msg.data[2] - 40; } else { liveInverterTemp = 0; }
+            break;
+        }
+
+        case 65030: { // AC Voltage and Frequency
+            lastDataReceivedTime = millis();
+            if (msg.data[2] != 0xFF && msg.data[3] != 0xFF) { liveACVoltage = (msg.data[3] << 8) | msg.data[2]; } else { liveACVoltage = 0; }
+            if (msg.data[4] != 0xFF && msg.data[5] != 0xFF) {
+                uint16_t rawHz = (msg.data[5] << 8) | msg.data[4];
+                if (rawHz < 0xFA00) { liveACFrequency = rawHz * (1.0 / 128.0); } else { liveACFrequency = 0.0; }
+            } else { liveACFrequency = 0.0; }
+            break;
+        }
+
+        case 65271: { // Battery Voltage
+            lastDataReceivedTime = millis();
+            if (msg.data[4] != 0xFF && msg.data[5] != 0xFF) {
+                uint16_t rawVolts = (msg.data[5] << 8) | msg.data[4];
+                if (rawVolts < 0xFA00) { liveBatteryVoltage = rawVolts * 0.05; } else { liveBatteryVoltage = 0.0; }
+            } else { liveBatteryVoltage = 0.0; }
+            break;
+        }
+    }
+}
+
 
 
 

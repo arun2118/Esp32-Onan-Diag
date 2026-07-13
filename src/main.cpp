@@ -252,47 +252,72 @@ void twaiBackgroundEngine(void *pvParameters) {
     tx_msg.extd = 1;
     tx_msg.rtr = 0;
     tx_msg.data_length_code = 8;
-    tx_msg.identifier = 0x0CE0FF11; // Priority 3, PGN 57599, Source Address 0x11
+    
+    // ✅ VERIFIED J1939 TARGET: Priority 6 | PGN 59904 (Request Frame) | Target: Inverter (0x21) | Source: Panel (0x11)
+    tx_msg.identifier = 0x18EA2111; 
     
     unsigned long lastTxTime = 0;
     unsigned long commandStartTime = 0;
-    GenControlCommand previousCommand = CMD_RELEASE;
+    bool isCommandActive = false;
 
     while (1) {
         if (isUpdating) { vTaskDelay(pdMS_TO_TICKS(100)); continue; }
         GenControlCommand activeCmd = currentActiveCommand;
 
-        if (activeCmd != CMD_RELEASE && previousCommand == CMD_RELEASE) { commandStartTime = millis(); }
-        previousCommand = activeCmd;
-
-        if (activeCmd != CMD_RELEASE && (millis() - commandStartTime >= 3000)) { 
-            currentActiveCommand = CMD_RELEASE; 
-            activeCmd = CMD_RELEASE; 
-            logMessage("\n⚠️ [REMOTE] Safety Clear. Releasing line to IDLE.\n");
-        }
-
-        unsigned long now = millis();
-        if (now - lastTxTime >= 100) {
-            lastTxTime = now;
-            for(int i = 1; i < 8; i++) { tx_msg.data[i] = 0xFF; }
-            
-            if (activeCmd == CMD_STOP)       { tx_msg.data[0] = 0xF1; } 
-            else if (activeCmd == CMD_START)  { tx_msg.data[0] = 0xF2; } 
-            else if (activeCmd == CMD_PRIME)  { tx_msg.data[0] = 0xF1; } 
-            else                              { tx_msg.data[0] = 0xF0; }
-
-            if (activeCmd != CMD_RELEASE) { 
-                logMessage("\n📡 [REMOTE] Broadcasting J1939 Command: 0x%02X from Panel Address 0x11\n", tx_msg.data[0]);
-                twai_transmit(&tx_msg, pdMS_TO_TICKS(5)); 
+        // --- 1. NON-BLOCKING J1939 REQUEST ENGINE ---
+        if (activeCmd != CMD_RELEASE) {
+            if (!isCommandActive) {
+                isCommandActive = true;
+                commandStartTime = millis();
+                logMessage("\n📡 [J1939 CORE] Packing Table 8 Compliant Request Frame...\n");
             }
+
+            // ✅ FIXED SYNTAX MAPPING: Pack the target PGN (65280 / 0x00FF00) explicitly into Bytes 1, 2, and 3
+            tx_msg.data[1] = 0x00; // Target PGN Low Byte
+            tx_msg.data[2] = 0xFF; // Target PGN Mid Byte
+            tx_msg.data[3] = 0x00; // Target PGN High Byte
+            
+            // Set trailing padding bytes
+            for(int i = 4; i < 8; i++) { tx_msg.data[i] = 0xFF; }
+
+            // Apply Table 7 operational command state mappings to Byte 0
+            if (activeCmd == CMD_STOP)        { tx_msg.data[0] = 0xF1; } // Hex 1 -> Stop
+            else if (activeCmd == CMD_START)  { tx_msg.data[0] = 0xF2; } // Hex 2 -> Start
+            else if (activeCmd == CMD_PRIME)  { tx_msg.data[0] = 0xF1; } // Priming holds Stop (Hex 1)
+
+            // Continuous high-speed streaming window execution (Sends every 50ms)
+            unsigned long now = millis();
+            if (now - lastTxTime >= 50) {
+                lastTxTime = now;
+                twai_transmit(&tx_msg, pdMS_TO_TICKS(5));
+            }
+            
+            // Safety timeout headroom thresholds (Prime: 15s, Start: 6s)
+            unsigned long maxRuntime = (activeCmd == CMD_PRIME) ? 15000 : (activeCmd == CMD_START ? 6000 : 3000);
+            if (millis() - commandStartTime >= maxRuntime) {
+                logMessage("\n⚠️ [J1939 CORE] Runtime complete. Transmitting Table 8 'None' release state.\n");
+                
+                // TABLE 8 COMPLIANCE: Must explicitly request 'None' (0xF0) to release the loop button
+                tx_msg.data[0] = 0xF0; 
+                twai_transmit(&tx_msg, pdMS_TO_TICKS(5));
+                
+                currentActiveCommand = CMD_RELEASE;
+                isCommandActive = false;
+            }
+        } else {
+            isCommandActive = false; 
         }
 
-        if (twai_receive(&rx_msg, pdMS_TO_TICKS(5)) == ESP_OK) {
+        // --- 2. DE-COUPLED HIGH-SPEED RECEIVER ENGINE ---
+        while (twai_receive(&rx_msg, pdMS_TO_TICKS(1)) == ESP_OK) {
             if (rx_msg.extd) { processHglcaNetworkFrame(rx_msg); }
         }
-        vTaskDelay(pdMS_TO_TICKS(5));
+        vTaskDelay(pdMS_TO_TICKS(5)); 
     }
 }
+
+
+
 
 void processHglcaNetworkFrame(twai_message_t msg) {
     uint32_t pgn = (msg.identifier >> 8) & 0x3FFFF;
@@ -435,123 +460,5 @@ void processHglcaNetworkFrame(twai_message_t msg) {
             } else { liveBatteryVoltage = 0.0; }
             break;
         }
-    }
-}
-
-
-
-
-void processHglcaNetworkFrame(twai_message_t msg) {
-    // Isolate the Parameter Group Number (PGN) from the 29-bit J1939 Identifier
-    uint32_t pgn = (msg.identifier >> 8) & 0x3FFFF;
-    
-    if (((msg.identifier >> 16) & 0xFF) < 240) {
-        pgn = (msg.identifier >> 8) & 0x3FF00; 
-    }
-
-    switch(pgn) {
-        case 65280: { // PGN 65280: Proprietary B Status Loop (PropB_00)
-            lastDataReceivedTime = millis(); 
-            uint8_t engineState = msg.data[0]; // Byte 1
-            globalGensetState = engineState;
-
-            static uint8_t lastEngineState = 0xFF;
-            if (engineState != lastEngineState) {
-                lastEngineState = engineState;
-                logMessage("\n⚡ [STATE CHANGE] Status: ");
-                switch(engineState) {
-                    case 0: logMessage("Ready / Standby (AC Disconnected)\n"); break;
-                    case 1: logMessage("Stopped / Engine Inactive\n"); break;
-                    case 2: logMessage("Starting / Cranking Engine\n"); break;
-                    case 3: logMessage("Running / Producing AC Power\n"); break;
-                    case 4: logMessage("Warm-up Mode / Automatic Choke\n"); break;
-                    case 5: logMessage("FUEL PRIMING RUNNING (Lift Pump Engaged)\n"); break;
-                    case 6: logMessage("CRITICAL CRASH / FAULT SHUTDOWN TRIGGERED\n"); break;
-                    default: logMessage("Unknown (0x%02X)\n", engineState); break;
-                }
-
-                if ((engineState == 3 && currentActiveCommand == CMD_START) ||
-                    (engineState == 1 && currentActiveCommand == CMD_STOP)  ||
-                    (engineState == 5 && currentActiveCommand == CMD_PRIME)) {
-                    currentActiveCommand = CMD_RELEASE;
-                    logMessage("✔ [REMOTE] Control Handshake Complete.\n");
-                }
-            }
-
-            // Fault Code Processor Matrix (Byte 3 / Index 2)
-            uint16_t activeFaultCode = (engineState == 6 && msg.data[2] == 0) ? 53 : msg.data[2];
-            static uint16_t lastFaultCode = 0x0000;
-
-            if (engineState != 6 && (activeFaultCode == 0x00 || msg.data[2] == 0xFF)) {
-                if (lastFaultCode != 0) { logMessage("\n✔ [DIAGNOSTIC] System Normal. Faults cleared.\n"); lastFaultCode = 0; }
-                break;
-            }
-
-            if (activeFaultCode != lastFaultCode) {
-                lastFaultCode = activeFaultCode;
-                logMessage("\n🚨 [FAULT ACTIVE] Description: ");
-                for (int i = 0; i < ONAN_DB_COUNT; i++) {
-                    if (pgm_read_word(&(ONAN_FAULT_TABLE[i].faultNumber)) == activeFaultCode) {
-                        logMessage("%s (SPN %lu)\n", (const char*)pgm_read_ptr(&(ONAN_FAULT_TABLE[i].displayLabel)), pgm_read_dword(&(ONAN_FAULT_TABLE[i].spn)));
-                        break;
-                    }
-                }
-            }
-            break;
-        }
-
-        case 61444: { // PGN 61444: Electronic Engine Controller 1 (EEC1)
-            lastDataReceivedTime = millis(); 
-            if (msg.data[3] != 0xFF && msg.data[4] != 0xFF) {
-                uint16_t rawRPM = (msg.data[4] << 8) | msg.data[3]; 
-                if (rawRPM < 0xFA00) { liveEngineRPM = rawRPM * 0.125; } 
-                else { liveEngineRPM = 0.0; }
-            } else { liveEngineRPM = 0.0; }
-            break;
-        }
-
-        case 64409: { // PGN 64409: Inverter Temperatures (DCAC_AI1_T)
-            lastDataReceivedTime = millis(); 
-            if (msg.data[2] != 0xFF) {
-                liveInverterTemp = (int16_t)msg.data[2] - 40; // Byte 3 / Index 2
-            } else { liveInverterTemp = 0; }
-            break;
-        }
-
-        case 65030: { // PGN 65030: Basic AC Quantities (GAAC)
-            lastDataReceivedTime = millis(); 
-            if (msg.data[2] != 0xFF && msg.data[3] != 0xFF) {
-                liveACVoltage = (msg.data[3] << 8) | msg.data[2];
-            } else { liveACVoltage = 0; }
-
-            if (msg.data[4] != 0xFF && msg.data[5] != 0xFF) {
-                uint16_t rawHz = (msg.data[5] << 8) | msg.data[4];
-                if (rawHz < 0xFA00) { liveACFrequency = rawHz * (1.0 / 128.0); } 
-                else { liveACFrequency = 0.0; }
-            } else { liveACFrequency = 0.0; }
-            break;
-        }
-
-        case 65271: { // PGN 65271: Vehicle Electrical Power 1 (VEP1)
-            lastDataReceivedTime = millis(); 
-            
-            // ✅ FIXED SYNTAX ERROR: Safely parses Byte 5 [4] and Byte 6 [5]
-            uint8_t lowByte  = msg.data[4]; 
-            uint8_t highByte = msg.data[5];
-            
-            // If both bytes are 0xFF (255), the generator is sending uninitialized padding fields
-            if (lowByte != 0xFF || highByte != 0xFF) {
-                // Assemble the 16-bit word using correct J1939 Little Endian ordering
-                uint16_t rawVolts = (highByte << 8) | lowByte;
-                
-                // Page 44: Resolution is exactly 0.05 V per bit
-                liveBatteryVoltage = rawVolts * 0.05; 
-            } else { 
-                liveBatteryVoltage = 0.0; 
-            }
-            break;
-        }
-
-
     }
 }

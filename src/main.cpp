@@ -126,7 +126,7 @@ const char htmlDashboard[] PROGMEM = "<!DOCTYPE html><html><head>"
 ".progress-container{width:100%; background-color:#2d2d2d; border-radius:4px; margin-top:10px; display:none;}"
 ".progress-bar{width:0%; height:18px; background-color:#00adb5; border-radius:4px; text-align:center; line-height:18px; color:white; font-size:11px;}"
 "#status-msg{margin-top:8px; font-weight:bold; color:#ffb703;}</style></head><body>"
-"<h2>Cummins HGLCA Live J1939 Dashboard v2.0</h2>"
+"<h2>Cummins HGLCA Live J1939 Dashboard v2.1</h2>"
 "<div class='grid'>"
 " <div class='metric-card'><div class='lbl'>🔋 Battery Input</div><div class='val' id='m-volts'>0.0V</div></div>"
 " <div class='metric-card'><div class='lbl'>⚙️ Engine Speed</div><div class='val' id='m-rpm'>0 RPM</div></div>"
@@ -252,7 +252,11 @@ void twaiBackgroundEngine(void *pvParameters) {
     tx_msg.extd = 1;
     tx_msg.rtr = 0;
     tx_msg.data_length_code = 8;
-    tx_msg.identifier = 0x0CE0FF27; // Locked onto PGN 57599 with Source Address 0x27
+    
+    // ✅ RE-ALIGNED TO FACTORY PANEL IDENTITY: 
+    // Shifted from 0x0CE0FF27 to 0x0CE0FF11 (Source Address 0x11 - Standard Remote Panel / Cluster Overlay)
+    // This allows the Cummins ECU to accept the command as a standard physical dash input.
+    tx_msg.identifier = 0x0CE0FF11; 
     
     unsigned long lastTxTime = 0;
     unsigned long commandStartTime = 0;
@@ -277,10 +281,10 @@ void twaiBackgroundEngine(void *pvParameters) {
         if (now - lastTxTime >= 100) {
             lastTxTime = now;
             
-            // 1. Properly fill trailing bytes 1-7 with standard J1939 padding
+            // Fill trailing bytes 1-7 with standard J1939 padding
             for(int i = 1; i < 8; i++) { tx_msg.data[i] = 0xFF; }
             
-            // 2. ✅ FIXED SYNTAX ERROR: Explicitly target index [0] of the data array
+            // Table 7 Command Configurations mapped to Index 0
             if (activeCmd == CMD_STOP) {
                 tx_msg.data[0] = 0xF1; // Key 1 -> Stop Engine / Ground Run Loop
             } else if (activeCmd == CMD_START) {
@@ -292,7 +296,7 @@ void twaiBackgroundEngine(void *pvParameters) {
             }
 
             if (activeCmd != CMD_RELEASE) { 
-                logMessage("\n📡 [REMOTE] Broadcasting PGN 57599 Matrix: 0x%02X from Tool Address 0x27\n", tx_msg.data[0]);
+                logMessage("\n📡 [REMOTE] Broadcasting PGN 57599 Matrix: 0x%02X from Panel Address 0x11\n", tx_msg.data[0]);
                 twai_transmit(&tx_msg, pdMS_TO_TICKS(5)); 
             }
         }
@@ -303,8 +307,6 @@ void twaiBackgroundEngine(void *pvParameters) {
         vTaskDelay(pdMS_TO_TICKS(5));
     }
 }
-
-
 
 
 

@@ -1,6 +1,8 @@
 /* 
-   v2.0 voltage working
-   6-26-26 --- Cummins Multi-PGN Deep Diagnostic & Vehicle Control Interface
+   v2.3 FMI and PGN should be decoded(not tested). Working on start, prime button
+
+   7-14-26 
+   --- Cummins Multi-PGN Deep Diagnostic & Vehicle Control Interface
    1. Wire Connection: TX to GPIO1, RX to GPIO0 (via logic shifter), Grounded RS Pin.
    2. Open Wi-Fi on device and connect to "Cummins_Live_Dashboard" with password "12345678"
    3. Open browser and access address "192.168.4.1"
@@ -126,7 +128,7 @@ const char htmlDashboard[] PROGMEM = "<!DOCTYPE html><html><head>"
 ".progress-container{width:100%; background-color:#2d2d2d; border-radius:4px; margin-top:10px; display:none;}"
 ".progress-bar{width:0%; height:18px; background-color:#00adb5; border-radius:4px; text-align:center; line-height:18px; color:white; font-size:11px;}"
 "#status-msg{margin-top:8px; font-weight:bold; color:#ffb703;}</style></head><body>"
-"<h2>Cummins HGLCA Live J1939 Dashboard v2.1</h2>"
+"<h2>Cummins HGLCA Live J1939 Dashboard v2.3</h2>"
 "<div class='grid'>"
 " <div class='metric-card'><div class='lbl'>🔋 Battery Input</div><div class='val' id='m-volts'>0.0V</div></div>"
 " <div class='metric-card'><div class='lbl'>⚙️ Engine Speed</div><div class='val' id='m-rpm'>0 RPM</div></div>"

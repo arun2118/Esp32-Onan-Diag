@@ -175,19 +175,22 @@ void setup() {
     esp_bt_controller_deinit();
     
     // 2. Initialize Wi-Fi in absolute Access Point mode
+    // Force a hard network register wipe on startup
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+    delay(200);
+
+    // Re-initialize cleanly
     WiFi.mode(WIFI_AP);
     delay(100);
 
-    // 3. Launch the SoftAP Network profile
     if (WiFi.softAP("Cummins_Live_Dashboard", "12345678")) {
         Serial.println("📡 Wi-Fi Access Point successfully brought online!");
-    } else {
-        Serial.println("❌ Critical Error: Wi-Fi Access Point failed to initialize!");
     }
-
-    // 4. ✅ FIX: Turn OFF internal Wi-Fi power-saving and force maximum radio broadcast power
+    
+    // Disable sleep mode and force maximum radio broadcast power
     esp_wifi_set_ps(WIFI_PS_NONE); 
-    WiFi.setTxPower(WIFI_POWER_19_5dBm); // Scale up to full native antenna capability
+    WiFi.setTxPower(WIFI_POWER_19_5dBm); 
 
     // 5. ✅ FIX: Clear out and pre-allocate our global log string buffer memory 
     // to prevent continuous heap fragmentation down the road

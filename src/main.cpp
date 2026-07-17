@@ -255,10 +255,10 @@ void twaiBackgroundEngine(void *pvParameters) {
     tx_msg.rtr = 0;
     tx_msg.data_length_code = 8;
     
-    // ✅ VERIFIED J1939 TARGET: Priority 6 | PGN 59904 (Request Frame) | Target: Inverter (0x21) | Source: Panel (0x11)
-    tx_msg.identifier = 0x18EA2111; 
+    // ✅ TRUE CUMMINS CONTROL IDENTIFIER (PGN 65281 / 0xFF01 from Source Address 0x27)
+    // Try changing 27 to 11 or 17 if the ECU filters out the service tool address slot.
+    tx_msg.identifier = 0x0CFF0127; 
     
-    unsigned long lastTxTime = 0;
     unsigned long commandStartTime = 0;
     bool isCommandActive = false;
 
@@ -266,46 +266,36 @@ void twaiBackgroundEngine(void *pvParameters) {
         if (isUpdating) { vTaskDelay(pdMS_TO_TICKS(100)); continue; }
         GenControlCommand activeCmd = currentActiveCommand;
 
-        // --- 1. NON-BLOCKING J1939 REQUEST ENGINE ---
+        // --- 1. LIGHTWEIGHT ONE-SHOT PULSE TRANSMITTER ---
         if (activeCmd != CMD_RELEASE) {
             if (!isCommandActive) {
                 isCommandActive = true;
                 commandStartTime = millis();
-                logMessage("\n📡 [J1939 CORE] Packing Table 8 Compliant Request Frame...\n");
+                logMessage("\n📡 [J1939] Targeting PGN 65281: Sending active control stream...\n");
             }
 
-            // ✅ FIXED SYNTAX MAPPING: Pack the target PGN (65280 / 0x00FF00) explicitly into Bytes 1, 2, and 3
-            tx_msg.data[1] = 0x00; // Target PGN Low Byte
-            tx_msg.data[2] = 0xFF; // Target PGN Mid Byte
-            tx_msg.data[3] = 0x00; // Target PGN High Byte
+            // Fill bytes 1-7 with standard J1939 unused data padding
+            for(int i = 1; i < 8; i++) { tx_msg.data[i] = 0xFF; }
             
-            // Set trailing padding bytes
-            for(int i = 4; i < 8; i++) { tx_msg.data[i] = 0xFF; }
+            // ✅ IMAGE ANALYSIS COMPLIANCE: Target Byte 1 (Index 0) lower nibble
+            if (activeCmd == CMD_STOP)        { tx_msg.data[0] = 0xF1; } // Hex 1 -> Stop Engine
+            else if (activeCmd == CMD_START)  { tx_msg.data[0] = 0xF2; } // Hex 2 -> Start Engine
+            else if (activeCmd == CMD_PRIME)  { tx_msg.data[0] = 0xF1; } // Prime uses a prolonged Stop signal hold
 
-            // Apply Table 7 operational command state mappings to Byte 0
-            if (activeCmd == CMD_STOP)        { tx_msg.data[0] = 0xF1; } // Hex 1 -> Stop
-            else if (activeCmd == CMD_START)  { tx_msg.data[0] = 0xF2; } // Hex 2 -> Start
-            else if (activeCmd == CMD_PRIME)  { tx_msg.data[0] = 0xF1; } // Priming holds Stop (Hex 1)
-
-            // Continuous high-speed streaming window execution (Sends every 50ms)
-            unsigned long now = millis();
-            if (now - lastTxTime >= 50) {
-                lastTxTime = now;
-                twai_transmit(&tx_msg, pdMS_TO_TICKS(5));
-            }
+            twai_transmit(&tx_msg, pdMS_TO_TICKS(5));
             
-            // Safety timeout headroom thresholds (Prime: 15s, Start: 6s)
-            unsigned long maxRuntime = (activeCmd == CMD_PRIME) ? 15000 : (activeCmd == CMD_START ? 6000 : 3000);
+            // Maintain transmission bursts for 4 seconds for Start, and 12 seconds for Prime
+            unsigned long maxRuntime = (activeCmd == CMD_PRIME) ? 12000 : 4000;
             if (millis() - commandStartTime >= maxRuntime) {
-                logMessage("\n⚠️ [J1939 CORE] Runtime complete. Transmitting Table 8 'None' release state.\n");
+                logMessage("\n⚠️ [J1939] Runtime complete. Sending Table 8 'None' release state.\n");
                 
-                // TABLE 8 COMPLIANCE: Must explicitly request 'None' (0xF0) to release the loop button
-                tx_msg.data[0] = 0xF0; 
+                tx_msg.data[0] = 0xF0; // Actively command 'None' (Hex 0) to release the relay line
                 twai_transmit(&tx_msg, pdMS_TO_TICKS(5));
                 
                 currentActiveCommand = CMD_RELEASE;
                 isCommandActive = false;
             }
+            vTaskDelay(pdMS_TO_TICKS(50)); // Fast 50ms transmission pulse interval
         } else {
             isCommandActive = false; 
         }
@@ -314,11 +304,9 @@ void twaiBackgroundEngine(void *pvParameters) {
         while (twai_receive(&rx_msg, pdMS_TO_TICKS(1)) == ESP_OK) {
             if (rx_msg.extd) { processHglcaNetworkFrame(rx_msg); }
         }
-        vTaskDelay(pdMS_TO_TICKS(5)); 
+        vTaskDelay(pdMS_TO_TICKS(5));
     }
 }
-
-
 
 
 void processHglcaNetworkFrame(twai_message_t msg) {

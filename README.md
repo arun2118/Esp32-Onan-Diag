@@ -34,16 +34,17 @@ The physical layer utilizes an automotive-grade CAN transceiver module to step u
 To bypass critical microcontroller boot configuration requirements (strapping pin logic vectors) and maintain high-speed wireless processing stability without data logic line saturation, the hardware array must be wired exactly as follows:
 
 ```text
-               HIGH-SPEED CAN TRANSCEIVER            ESP32 CONTROLLER MICRO
-               +--------------------+                +------------------+
+ HIGH-SPEED CAN TRANSCEIVER            ESP32 CONTROLLER MICRO
+ +------------------------+            +------------------------+
 
-               |        VCC         |<-------------->|  5V Main Power   |
-               |        GND         |<-------------->|    Common GND    |
-               |        TXD         |<-------------->|  Hardware TX Pin |
-               |        RXD         |<-------------->|  Hardware RX Pin | <-- Non-strapping safe IO selection
-               |    VIO / V_LEVEL   |<-------------->|  3.3V Rail Out   | <-- Clamps logic lines to 3.3V safely
-               +--------------------+                +------------------+
+ |          VCC           |<---------->|     5V Main Power      |
+ |          GND           |<---------->|       Common GND       |
+ |          TXD           |<---------->|     Hardware TX Pin    |
+ |          RXD           |<---------->|     Hardware RX Pin    | <-- Non-strapping safe IO
+ |     VIO / V_LEVEL      |<---------->|      3.3V Rail Out     | <-- Clamps logic to 3.3V
+ +------------------------+            +------------------------+
 ```
+
 
 ---
 

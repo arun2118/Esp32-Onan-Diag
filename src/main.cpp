@@ -170,25 +170,36 @@ void setup() {
     pinMode(STATUS_LED_PIN, OUTPUT);
     logMutex = xSemaphoreCreateMutex();
 
+    // 1. Clear out Bluetooth to save memory space
     esp_bt_controller_disable();
     esp_bt_controller_deinit();
     
-    // 1. Force the internal radio architecture into clear, absolute Access Point mode
+    // 2. Initialize Wi-Fi in absolute Access Point mode
     WiFi.mode(WIFI_AP);
-    delay(500); // Small stability delay to let the radio engine state settle
+    delay(100);
 
-    // 2. Launch the SoftAP using only the bare essentials (Name & Password)
-    // This allows the ESP32 internal firmware to automatically pick stable network defaults
+    // 3. Launch the SoftAP Network profile
     if (WiFi.softAP("Cummins_Live_Dashboard", "12345678")) {
         Serial.println("📡 Wi-Fi Access Point successfully brought online!");
     } else {
         Serial.println("❌ Critical Error: Wi-Fi Access Point failed to initialize!");
     }
 
-    // 3. Lower transmission power slightly to stabilize the tiny SuperMini antenna trace line
-    WiFi.setTxPower(WIFI_POWER_13dBm);
-    
+    // 4. ✅ FIX: Turn OFF internal Wi-Fi power-saving and force maximum radio broadcast power
+    esp_wifi_set_ps(WIFI_PS_NONE); 
+    WiFi.setTxPower(WIFI_POWER_19_5dBm); // Scale up to full native antenna capability
+
+    // 5. ✅ FIX: Clear out and pre-allocate our global log string buffer memory 
+    // to prevent continuous heap fragmentation down the road
+    if (logMutex != NULL && xSemaphoreTake(logMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        webLogBuffer = "";
+        webLogBuffer.reserve(4096); // Lock in a solid, un-fragmentable 4KB RAM buffer
+        xSemaphoreGive(logMutex);
+    }
+
+    delay(200);
     ArduinoOTA.begin();
+
 
 
     server.on("/", HTTP_GET, []() { server.send(200, "text/html", htmlDashboard); });

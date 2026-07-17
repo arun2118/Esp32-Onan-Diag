@@ -1,8 +1,31 @@
+<div align="center">
+
 # ⚡ Cummins Onan HGLCA J1939 Digital Control Interface
 
 An ESP32 and high-speed CAN transceiver module implementation providing full bi-directional diagnostic telemetry tracking and real-time remote powertrain control loops for Cummins HGLCA inverter generators.
 
 ---
+
+<div align="center"> 
+<table> 
+<tr> 
+<td align="center" valign="top"> 
+<img src="https://github.com/user-attachments/assets/60e86fe0-6b3c-4bd5-9706-b0d6310e5aa3" alt="circuit_image" height="250" /><br /> 
+<sub><b>Circuit Diagram</b></sub> 
+</td> 
+<td align="center" valign="top"> 
+<img src="https://github.com/user-attachments/assets/a7a3e850-8a35-4710-a52f-0cc2abd3cd3e" alt="Screenshot 2026-06-11 135819" height="250" /><br /> 
+<sub><b>Onan CAN</b></sub> 
+</td>
+
+<td align="center" valign="bottom"> 
+<img src="https://github.com/user-attachments/assets/5b97c472-69fc-492f-8583-920183ec214e" alt="Screenshot 2026-06-26 9 34 40 AM" height="250" /><br /> 
+<sub><b>Web Dashboard</b></sub> 
+</td> 
+ 
+</tr> 
+</table> 
+</div>
 
 ## 🔧 Hardware Architecture & Secure 5-Wire Pinout
 
@@ -72,44 +95,10 @@ The system actively listens to **PGN 65226 (DM1 Active Diagnostic Trouble Codes)
 *   **SPN 651 | FMI 2** ➔ *Code 52 (Fuel Circuit Fault)*: Fuel Injector circuit outlier/overcurrent. Inspect injector module pins.
 *   **SPN 4083 | FMI 8** ➔ *Code 57 (Overprime Warning)*: Fuel prime active for over 3 continuous minutes. Release Stop key immediately.
 *   **SPN 1390 | FMI 2** ➔ *Code 57 (Pressure Sensor Fault)*: High or low LP sensor voltage outlier. Verify tank pressure (9-13 in WC).
-
-
-
-<div align="center">
-
-# Cummins Onan HGLCA Diagnostic Engine & Telematics Gateway
-
-A lightweight, high-performance ESP32 application designed to interface with the digital controller of a **Cummins Onan HGLCA (Gasoline/Inverter)** RV generator. By tapping into the vehicle's secondary CAN bus framework via custom protocol reverse-engineering, this system maps proprietary operational state transitions, tracks heavy-duty diagnostic parameters, and serves a thread-safe live diagnostic dashboard right to your web browser.
-
 ---
-
-### 🚧 DEVELOPMENT STATUS: WORK IN PROGRESS 🚧
-*This project is currently under active development and field-testing. The protocol mapping is being reverse-engineered sequentially; as a result, **not all factory fault codes, operational sub-states, or diagnostic variables have been mapped out yet.** Features and code structures are subject to changes as new network frames are cataloged.*
-
----
-
 </div>
 
-<div align="center"> 
-<table> 
-<tr> 
-<td align="center" valign="top"> 
-<img src="https://github.com/user-attachments/assets/60e86fe0-6b3c-4bd5-9706-b0d6310e5aa3" alt="circuit_image" height="250" /><br /> 
-<sub><b>Circuit Diagram</b></sub> 
-</td> 
-<td align="center" valign="top"> 
-<img src="https://github.com/user-attachments/assets/a7a3e850-8a35-4710-a52f-0cc2abd3cd3e" alt="Screenshot 2026-06-11 135819" height="250" /><br /> 
-<sub><b>Onan CAN</b></sub> 
-</td>
 
-<td align="center" valign="bottom"> 
-<img src="https://github.com/user-attachments/assets/5b97c472-69fc-492f-8583-920183ec214e" alt="Screenshot 2026-06-26 9 34 40 AM" height="250" /><br /> 
-<sub><b>Web Dashboard</b></sub> 
-</td> 
- 
-</tr> 
-</table> 
-</div>
 
 
 ---
@@ -128,20 +117,35 @@ A lightweight, high-performance ESP32 application designed to interface with the
 
 While standard heavy-duty commercial J1939 networks rely heavily on standard Parameter Group Numbers (PGNs) like **Electronic Engine Controller 1 (EEC1 - PGN 61444)** for RPM, the Cummins Onan HGLCA digital controller utilizes a proprietary application layer footprint optimized for inverter-generator topologies.
 
-### 🔢 Protocol Frame Breakdown
+---
 
-All critical operational states and diagnostic fault vectors are broadcasted continuously over an extended 29-bit identifier framework under **Proprietary PGN 65280 (0xFF00)**. 
+### 🎯 J1939 Network Telemetry & Multi-PGN Parsing Matrix
 
-* **CAN Identifier**: `0x18FF00XX` (Where `XX` represents the dynamic Source Address of the controller node)
-* **Data Length Code (DLC)**: 8 Bytes
-* **Transmission Rate**: 100ms (Continuous Loop)
+The Cummins HGLCA platform splits real-time metrics across distinct Parameter Group Numbers (PGNs). The firmware operates an **Accept All Pass Filter**, utilizing Little Endian multi-byte realignment to populate the telemetry indicators simultaneously:
+
+*   **Engine Speed / RPM (PGN 61444)**: Bytes 4-5. Resolution: `0.125 RPM/bit`.
+*   **Inverter Temperature (PGN 64409)**: Byte 3. Resolution: `1 °C/bit` with a `-40 °C` offset.
+*   **AC RMS Output Voltage (PGN 65030)**: Bytes 3-4. Resolution: `1 V/bit`.
+*   **AC Line Frequency (PGN 65030)**: Bytes 5-6. Resolution: `1/128 Hz/bit`.
+*   **DC Battery System Input (PGN 65271)**: Bytes 5-6. Resolution: `0.05 V/bit`.
+
+---
+
+### 📑 Protocol Frame Breakdown: Proprietary Status & Fault Code Vectoring
+
+All critical operational states and baseline diagnostic fault vectors are broadcasted continuously over an extended 29-bit identifier framework under **Proprietary PGN 65280 (0xFF00)**. 
+
+*   **CAN Identifier**: `0x0CFF00XX` (Where `XX` represents the dynamic Source Address of the controller node, typically `0x21`)
+*   **Data Length Code (DLC)**: 8 Bytes
+*   **Transmission Rate**: 100ms (Continuous Cyclic Loop)
 
 ```text
- [ Byte 0 ]   [ Byte 1 ]   [ Byte 2 ]   [ Byte 3 ]   [ Byte 4 ]   [ Bytes 5-7 ]
- ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌───────────┐
- │ State   │  │Reserved │  │ Fault   │  │ Fault   │  │Reserved │  │  Unused   │
- │ ID (Int)│  │ (0x00)  │  │ Dig1(Ch)│  │ Dig2(Ch)│  │ (0x00)  │  │  (0xFF)   │
- └─────────┘  └─────────┘  └─────────┘  └─────────┘  └─────────┘  └───────────┘
+ [ Byte 0 ]     [ Byte 1 ]     [ Byte 2 ]     [ Byte 3 ]     [ Byte 4 ]     [ Bytes 5-7 ]
++------------+ +------------+ +------------+ +------------+ +------------+ +-------------+
+
+|   State    | |  Reserved  | |   Fault    | |   Fault    | |  Reserved  | |   Unused    |
+|  ID (Int)  | |   (0x00)   | |  Dig1(Ch)  | |  Dig2(Ch)  | |   (0x00)   | |   (0xFF)    |
++------------+ +------------+ +------------+ +------------+ +------------+ +-------------+
 ```
 
 | Byte Index | Data Field Assignment | Format Type | Description / Context |
@@ -154,6 +158,32 @@ All critical operational states and diagnostic fault vectors are broadcasted con
 | **Byte 5** | Unused Data Slot | J1939 Standard | Empty padding byte (`0xFF`) |
 | **Byte 6** | Unused Data Slot | J1939 Standard | Empty padding byte (`0xFF`) |
 | **Byte 7** | Unused Data Slot | J1939 Standard | Empty padding byte (`0xFF`) |
+
+---
+
+### 📡 Remote Control Automation Engine (PGN 65281)
+
+Remote operation is achieved entirely over software data streams. Commands bypass safety blocks by utilizing **Source Address `0x27`** (Authorized Service/Diagnostic Tool profile) targeting the dedicated control registration pipeline explicitly:
+
+```text
+       CUMMINS ONAN REMOTE OPERATION CONTROL FRAME
++-------------------------------------------------------+
+
+|  CAN Extended ID: 0x0CFF0127                          |
+|  PGN Type       : Proprietary B PGN 65281 (0xFF01)    |
+|  Target Offset  : Byte 1 (Index 0), Lower 4-Bit Nibble|
++-------------------------------------------------------+
+```
+
+### 📋 Bitmask Control Key Layout (SPN 65281)
+
+Per core product specifications, commands occupy the lower nibble of Byte 1, while the upper bits are maintained with `0xF` masking padding. Transitions occur via high-speed, non-blocking **50ms decoupled pulse streams**:
+
+*   **🚀 Crank Start (`0xF2`)**: Transmits raw code `2` to SPN 65281 for up to 4 seconds or until a running feedback loop is achieved, then cleanly drops.
+*   **🛑 Kill Engine (`0xF1`)**: Transmits raw code `1` to SPN 65281 for 2 seconds, forcing an immediate mechanical shutdown sequence.
+*   **💽 Fuel Priming (`0xF1` Prolonged Hold)**: Transmits raw code `1` continuously for 12 seconds. Holding the "Stop" channel low while the machine is fully inactive satisfies the ECU logic gate to engage the low-pressure lift pump.
+*   **🔓 None / Button Release (`0xF0`)**: Protocol compliance requires actively broadcasting code `0` to release the digital button hook, returning the line to idle safely without causing an `SPN 524032` loss-of-communication fault trigger.
+
 
 ### 🚨 Diagnostic Streaming Logic & Bug Resolution
 
@@ -189,7 +219,7 @@ Unlike standard J1939 frameworks, the HGLCA CAN digital architecture treats its 
 
 ### 🔌 Hardware Schematics & Pinout Mapping
 
-This project utilizes an **ESP32-C3 SuperMini** microcontroller to interface with a high-speed CAN network through a **TJA1051T/3** transceiver breakout. The system uses an external **3.3V Buck Converter** to safely step down raw automotive battery voltages to provide a single, unified logic power rail.
+This project utilizes an **ESP32** microcontroller to interface with a high-speed CAN network through a **TJA1051T/3** transceiver breakout. The system uses an external **3.3V Buck Converter** to safely step down raw automotive battery voltages to provide a single, unified logic power rail.
 
 ### 🖼️ Schematic Overview
 
@@ -203,32 +233,15 @@ This project utilizes an **ESP32-C3 SuperMini** microcontroller to interface wit
        │                         │
        ▼ (+3.3V Output)          │
  ┌──────────┐                    │
- │  ESP32   │                    │
- │ SuperMini│                    │
+ │  ESP32   │                    ││                    │
  └──────────┘                    ▼
   │  │  │  │               ┌───────────┐
   │  │  │  └──────────────>│ Transceiver│ ─── [ CAN_H / CAN_L ]
-  │  │  └─────────────────>│ TJA1051T/3 │      (Automotive Port)
+  │  │  └─────────────────>│ TJA1051T/3 │      (Generator Port)
   ▼  ▼                     └───────────┘
 [ Logic Link: RX / TX ]
 ```
-### 📌 Physical Pin Mapping Matrix
 
-| Source Component | Source Pin Label | Wire Color | Target Component | Target Pin Label | Purpose / Function |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **Power Input** | `+` (Positive) | Orange 🟠 | **3.3V Buck Converter** | `+` Input | Raw DC input supply path |
-| **Power Input** | `-` (Negative) | Black  ⚫ | **3.3V Buck Converter** | `-` Input | Master ground return path |
-| **3.3V Buck Converter** | `+` Output | Orange 🟠 | **ESP32-C3 SuperMini** | `3.3` | Regulated main 3.3V board power |
-| **3.3V Buck Converter** | `+` Output | Orange 🟠 | **TJA1051T/3 Breakout**| `Vcc` | Transceiver logic VIO / supply rail |
-| **3.3V Buck Converter** | `-` Output | Black  ⚫ | **ESP32-C3 SuperMini** | `G` (GND) | Shared logic ground baseline |
-| **3.3V Buck Converter** | `-` Output | Black  ⚫ | **TJA1051T/3 Breakout**| `GND` | Common transceiver ground |
-| **ESP32-C3 SuperMini**| `GPIO 2` | Purple 🟣 | **TJA1051T/3 Breakout**| `TX` | Transmit logic interface |
-| **ESP32-C3 SuperMini**| `GPIO 3` | Yellow 🟡 | **TJA1051T/3 Breakout**| `RX` | Receive logic interface |
-| **TJA1051T/3 Breakout**| `CANH` | Cyan   🔵 | **Automotive Plug** | Pin 1 (Top Left) | CAN-High differential node |
-| **TJA1051T/3 Breakout**| `CANL` | Magenta🟣 | **Automotive Plug** | Pin 2 (Bottom Left) | CAN-Low differential node |
-| **Automotive Plug** | Loop Link | Green  🟢 | **TJA1051T/3 Breakout**| `SLNT` | Grounded silent-mode bypass loop |
-
----
 
 ### ⚙️ Important Hardware Notes
 
@@ -327,9 +340,6 @@ spiffs,   data, spiffs,  0x390000, 0x60000,
 --------------------- 6/26/2026--------------------------
 
 
-## 🔧 Hardware Upgrade: Adafruit CAN Pal Deployment
-
-The system has been upgraded from the passive 3.3V SN65HVD230 breakout board to the robust, vehicle-grade **[Adafruit CAN Pal (TJA1051T/3)](https://adafruit.com)**. This single-board transceiver solution bridges the 3.3V logic of the ESP32-C3 with the heavy industrial 5.0V differential signaling constraints required by the Cummins HGLCA generator.
 
 ### 🔌 Safe 5-Wire Interfacing Pinout
 
@@ -364,37 +374,7 @@ Instead of tracking parameters inside a single proprietary message, the Cummins 
       |                 |               |                |                 |
       +-----------------+---------------+----------------+-----------------+
                                         |
-                        [ ESP32-C3 MULTI-PGN ENGINE ]
+                        [ ESP32 MULTI-PGN ENGINE ]
 ```
 
-### 🔍 Decoded Parameter Matrix
 
-1. **Genset State / Operational Status (PGN 65280)**
-   * **Byte Location**: Byte 0 (Index `0`)
-   * **States**: `1` = Stopped / Inactive, `2` = Starting / Cranking, `3` = Running / Producing AC, `5` = Fuel Priming, `6` = Fault Tripped.
-2. **Engine Speed / RPM (PGN 61444 - EEC1)**
-   * **Byte Location**: Bytes 4 and 5 (Indices `3` and `4`)
-   * **Resolution**: `0.125 RPM/bit`, Little Endian Byte Alignment.
-3. **Inverter Module Temperature (PGN 64409 - DCAC_AI1_T)**
-   * **Byte Location**: Byte 3 (Index `2`)
-   * **Resolution**: `1 °C/bit`, Offset: `-40 °C`.
-4. **Line-to-Neutral AC RMS Voltage (PGN 65030 - GAAC)**
-   * **Byte Location**: Bytes 3 and 4 (Indices `2` and `3`)
-   * **Resolution**: `1 V/bit`, Little Endian Byte Alignment.
-5. **Average AC Frequency (PGN 65030 - GAAC)**
-   * **Byte Location**: Bytes 5 and 6 (Indices `4` and `5`)
-   * **Resolution**: `1/128 Hz/bit`, Little Endian Byte Alignment.
-6. **Battery Potential / DC Input Voltage (PGN 65271 - VEP1)**
-   * **Byte Location**: Bytes 5 and 6 (Indices `4` and `5`)
-   * **Resolution**: `0.05 V/bit`, Little Endian Byte Alignment.
-
----
-
-## 🔒 Automated Control Fallback & Table 7 Bitmask Validation
-
-Remote control commands override physical switches using **PGN 59904 (Request Network)** directed explicitly toward the inverter controller at target address `0x21` from source tool address `0x27`. 
-
-* **Crank Start Execution**: Broadcasts `0xF2` (Table 7 Operational Command Key `2`).
-* **Kill Engine Execution**: Broadcasts `0xF1` (Table 7 Operational Command Key `1`).
-* **Fuel Lift Pump Priming**: Holds down `0xF1` (Table 7 Operational Command Key `1`), mimicking a long physical button hold to engage low-pressure priming pathways.
-* **Safety Isolation**: If a command is triggered but the generator network fails to achieve a handshake verification state within **3 seconds**, an internal watchdog auto-releases the transmission loop to `0xF0` (Idle) to prevent starter motor burnouts or system locks.

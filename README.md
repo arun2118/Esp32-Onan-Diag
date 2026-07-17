@@ -1,3 +1,80 @@
+# ⚡ Cummins Onan HGLCA J1939 Digital Control Interface
+
+An ESP32 and high-speed CAN transceiver module implementation providing full bi-directional diagnostic telemetry tracking and real-time remote powertrain control loops for Cummins HGLCA inverter generators.
+
+---
+
+## 🔧 Hardware Architecture & Secure 5-Wire Pinout
+
+The physical layer utilizes an automotive-grade CAN transceiver module to step up the ESP32's 3.3V digital logic to the robust 5.0V differential CAN signal standard required by heavy industrial vehicle networks.
+
+To bypass critical microcontroller boot configuration requirements (strapping pin logic vectors) and maintain high-speed wireless processing stability without data logic line saturation, the hardware array must be wired exactly as follows:
+
+```text
+               HIGH-SPEED CAN TRANSCEIVER            ESP32 CONTROLLER MICRO
+               +--------------------+                +------------------+
+
+               |        VCC         |<-------------->|  5V Main Power   |
+               |        GND         |<-------------->|    Common GND    |
+               |        TXD         |<-------------->|  Hardware TX Pin |
+               |        RXD         |<-------------->|  Hardware RX Pin | <-- Non-strapping safe IO selection
+               |    VIO / V_LEVEL   |<-------------->|  3.3V Rail Out   | <-- Clamps logic lines to 3.3V safely
+               +--------------------+                +------------------+
+```
+
+---
+
+## 🎯 J1939 Network Telemetry & Multi-PGN Parsing Matrix
+
+The Cummins HGLCA platform splits real-time metrics across distinct Parameter Group Numbers (PGNs). The firmware operates an **Accept All Pass Filter**, utilizing Little Endian multi-byte realignment to populate the telemetry indicators simultaneously:
+
+*   **Genset State / Status (PGN 65280)**: Byte 0. Mapped states: `1`=Stopped, `2`=Cranking, `3`=Running, `5`=Priming, `6`=Fault Target.
+*   **Engine Speed / RPM (PGN 61444)**: Bytes 4-5. Resolution: `0.125 RPM/bit`.
+*   **Inverter Temperature (PGN 64409)**: Byte 3. Resolution: `1 °C/bit` with a `-40 °C` offset.
+*   **AC RMS Output Voltage (PGN 65030)**: Bytes 3-4. Resolution: `1 V/bit`.
+*   **AC Line Frequency (PGN 65030)**: Bytes 5-6. Resolution: `1/128 Hz/bit`.
+*   **DC Battery System Input (PGN 65271)**: Bytes 5-6. Resolution: `0.05 V/bit`.
+
+---
+
+## 📡 Remote Control Automation Engine (PGN 65281)
+
+Remote operation is achieved entirely over software data streams. Commands bypass safety blocks by utilizing **Source Address `0x27`** (Authorized Service/Diagnostic Tool profile) targeting the dedicated control registration pipeline explicitly:
+
+```text
+       CUMMINS ONAN REMOTE OPERATION CONTROL FRAME
++-------------------------------------------------------+
+
+|  CAN Extended ID: 0x0CFF0127                          |
+|  PGN Type       : Proprietary B PGN 65281 (0xFF01)    |
+|  Target Offset  : Byte 1 (Index 0), Lower 4-Bit Nibble|
++-------------------------------------------------------+
+```
+
+### 📋 Bitmask Control Key Layout (SPN 65281)
+
+Per core product specifications, commands occupy the lower nibble of Byte 1, while the upper bits are maintained with `0xF` masking padding. Transitions occur via high-speed, non-blocking **50ms decoupled pulse streams**:
+
+*   **🚀 Crank Start (`0xF2`)**: Transmits raw code `2` to SPN 65281 for up to 4 seconds or until a running feedback loop is achieved, then cleanly drops.
+*   **🛑 Kill Engine (`0xF1`)**: Transmits raw code `1` to SPN 65281 for 2 seconds, forcing an immediate mechanical shutdown sequence.
+*   **💽 Fuel Priming (`0xF1` Prolonged Hold)**: Transmits raw code `1` continuously for 12 seconds. Holding the "Stop" channel low while the machine is fully inactive satisfies the ECU logic gate to engage the low-pressure lift pump.
+*   **🔓 None / Button Release (`0xF0`)**: Protocol compliance requires actively broadcasting code `0` to release the digital button hook, returning the line to idle safely without causing an `SPN 524032` loss-of-communication fault trigger.
+
+---
+
+## 🚨 Advanced Trouble Code Diagnosis & Manual Mapping
+
+The system actively listens to **PGN 65226 (DM1 Active Diagnostic Trouble Codes)**. When a powertrain fault triggers, the background parser intercepts the raw frame, extracts the SPN and FMI bits dynamically, and pushes explicit maintenance guidelines straight from the repair manual to the web console buffer:
+
+*   **SPN 110 | FMI 2** ➔ *Code 36 (Abnormal Shutdown)*: Uncommanded Mechanical Stall/Fuel Loss. Check fuel level, lines, and IPM pump relays.
+*   **SPN 1268 | FMI 4** ➔ *Code 36 (Abnormal Shutdown)*: Primary Winding Open Circuit on Ignition Coil. Check plugs and measure coil resistance.
+*   **SPN 931 | FMI 2** ➔ *Code 52 (Fuel Circuit Fault)*: IPM Fuel Pump open circuit/short. Replace pump or generator ECU driver.
+*   **SPN 651 | FMI 2** ➔ *Code 52 (Fuel Circuit Fault)*: Fuel Injector circuit outlier/overcurrent. Inspect injector module pins.
+*   **SPN 4083 | FMI 8** ➔ *Code 57 (Overprime Warning)*: Fuel prime active for over 3 continuous minutes. Release Stop key immediately.
+*   **SPN 1390 | FMI 2** ➔ *Code 57 (Pressure Sensor Fault)*: High or low LP sensor voltage outlier. Verify tank pressure (9-13 in WC).
+
+
+
 <div align="center">
 
 # Cummins Onan HGLCA Diagnostic Engine & Telematics Gateway

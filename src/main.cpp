@@ -377,6 +377,14 @@ void processHglcaNetworkFrame(twai_message_t msg) {
                     logMessage(" >> Action Plan  : 1. Check solenoid coil for opens/shorts. 2. Check wiring connections. 3. Replace solenoid if current exceeds 1.6A-3A. 4. Replace ECU if driver temp exceeds 155-185C.\n");
                 }
                 
+                // --- ✅ NEW: REMOTE INTERFACE CONFIGURATION GATEWAY ---
+                else if (parsedSpn == 524032 && parsedFmi == 31) {
+                    logMessage(" >> Factory Status: Standby Awaiting Handshake\n");
+                    logMessage(" >> Condition     : Generator is resting in remote standby mode.\n");
+                    logMessage(" >> Action Plan   : Push 'Prime Fuel' or 'Crank Start' to execute a remote J1939 automation handshake.\n");
+                }
+
+                
                 // --- FALLBACK UNMAPPED ALERTS ---
                 else {
                     logMessage(" >> Factory Code : Unknown / Variant Sub-Fault Code\n");

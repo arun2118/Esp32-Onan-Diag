@@ -1,7 +1,7 @@
 /* 
-   v2.3 FMI and PGN should be decoded(not tested). Working on start, prime button
+   v3.1 Rssi added
 
-   7-14-26 
+   7-24-26 
    --- Cummins Multi-PGN Deep Diagnostic & Vehicle Control Interface
    1. Wire Connection: TX to GPIO1, RX to GPIO0 (via logic shifter), Grounded RS Pin.
    2. Open Wi-Fi on device and connect to "Cummins_Live_Dashboard" with password "12345678"
@@ -118,51 +118,38 @@ const char htmlDashboard[] PROGMEM = "<!DOCTYPE html><html><head>"
 "<style>body{font-family:sans-serif; background:#121212; color:#e0e0e0; padding:15px; text-align:center;}"
 "h2, h3{color:#00adb5; margin:10px 0;} .box{background:#1e1e1e; padding:15px; border-radius:8px; margin:0 auto 15px auto; max-width:750px; border:1px solid #333;}"
 ".grid{display:flex; flex-wrap:wrap; gap:10px; justify-content:center; max-width:750px; margin:0 auto 15px auto;}"
-".metric-card{background:#1e1e1e; border:1px solid #333; border-radius:6px; padding:12px; width:135px; height:85px; text-align:center; box-sizing:border-box; display:flex; flex-direction:column; justify-content:space-between;}"
-".lbl{font-size:13px; color:#aaa; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}"
-".val{font-size:18px; font-weight:bold; color:#00adb5; margin-top:2px;}"
-"pre{background:#000; color:#0f0; padding:12px; border-radius:5px; overflow-y:scroll; height:250px; font-family:monospace; text-align:left; white-space:pre-wrap; margin-bottom:10px;}"
-"input[type=file]{background:#2d2d2d; padding:6px; border-radius:4px; color:#fff; border:1px solid #444;}"
-"input[type=button], .btn-action{background:#00adb5; color:#fff; border:none; padding:10px 15px; border-radius:4px; cursor:pointer; font-weight:bold; text-decoration:none; display:inline-block; margin:4px;}"
-".btn-clear{background:#3d3d3d;}.btn-start{background:#5cb85c;}.btn-stop{background:#d9534f;}.btn-prime{background:#f0ad4e; color:#222;}"
-".progress-container{width:100%; background-color:#2d2d2d; border-radius:4px; margin-top:10px; display:none;}"
-".progress-bar{width:0%; height:18px; background-color:#00adb5; border-radius:4px; text-align:center; line-height:18px; color:white; font-size:11px;}"
-"#status-msg{margin-top:8px; font-weight:bold; color:#ffb703;}</style></head><body>"
-"<h2>Cummins HGLCA Live J1939 Dashboard v2.3</h2>"
+".metric-card{background:#1e1e1e; border:1px solid #333; border-radius:6px; padding:12px; width:115px; height:85px; text-align:center; box-sizing:border-box; display:flex; flex-direction:column; justify-content:space-between;}"
+".lbl{font-size:11px; color:#aaa; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}"
+".val{font-size:16px; font-weight:bold; color:#00adb5; margin-top:2px;}"
+"pre{background:#000; color:#0f0; padding:12px; border-radius:5px; overflow-y:scroll; height:200px; font-family:monospace; text-align:left; white-space:pre-wrap;}"
+".btn-action{background:#00adb5; color:#fff; border:none; padding:12px 20px; border-radius:4px; cursor:pointer; font-weight:bold; display:inline-block; margin:4px; text-decoration:none;}"
+".btn-clear{background:#3d3d3d;}.btn-start{background:#5cb85c;}.btn-stop{background:#d9534f;}.btn-prime{background:#f0ad4e; color:#222;}</style></head><body>"
+"<h2>Cummins HGLCA Smart Control Interface</h2>"
 "<div class='grid'>"
 " <div class='metric-card'><div class='lbl'>🔋 Battery Input</div><div class='val' id='m-volts'>0.0V</div></div>"
 " <div class='metric-card'><div class='lbl'>⚙️ Engine Speed</div><div class='val' id='m-rpm'>0 RPM</div></div>"
 " <div class='metric-card'><div class='lbl'>🔥 Inverter Core</div><div class='val' id='m-temp'>0&deg;C</div></div>"
 " <div class='metric-card'><div class='lbl'>⚡ AC Output</div><div class='val' id='m-acv'>0V</div></div>"
 " <div class='metric-card'><div class='lbl'>🌀 Frequency</div><div class='val' id='m-hz'>0.0Hz</div></div>"
+" <!-- ✅ NEW RADIO SIGNAL CARD -->"
+" <div class='metric-card'><div class='lbl'>📶 Signal Status</div><div class='val' id='m-rssi'>N/A</div></div>"
 "</div>"
-"<div class='box'><h3>Live System Console Logs</h3><pre id='terminal'>Synchronizing multi-PGN J1939 data loops...</pre>"
-"<a href='/download-log' download='onan_generator_log.txt' class='btn-action'>💾 Download Log</a>"
-"<button onclick='clearSystemLog()' class='btn-action btn-clear'>🗑 Wipe Saved Log</button></div>"
-"<div class='box'><h3>⚡ Remote Powertrain Control Panel</h3>"
-"<button onclick='controlGenerator(\"/gen-prime\")' class='btn-action btn-prime'>💽 Prime Fuel</button>"
-"<button onclick='controlGenerator(\"/gen-start\")' class='btn-action btn-start'>🚀 Crank Start</button>"
-"<button onclick='controlGenerator(\"/gen-stop\")' class='btn-action btn-stop'>🛑 Kill Engine</button></div>"
-"<div class='box'><h3>Wireless Firmware Management</h3><form id='upload-form' enctype='multipart/form-data'>"
-"<input type='file' id='file-input' name='update' accept='.bin' required> "
-"<input type='button' value='Flash Payload (.bin)' onclick='uploadFile()'></form>"
-"<div class='progress-container' id='prg-wrapper'><div class='progress-bar' id='prg-bar'>0%</div></div><div id='status-msg'></div></div>"
-"<script>var term = document.getElementById('terminal'); var jsUpdating = false;"
-"function pollTelemetry() { if(jsUpdating) return;"
-" fetch('/telemetry-json').then(r => r.json()).then(data => {"
-" document.getElementById('m-volts').innerText = data.v.toFixed(1) + 'V';"
-" document.getElementById('m-rpm').innerText = Math.round(data.r) + ' RPM';"
-" document.getElementById('m-temp').innerText = data.t + '°C';"
-" document.getElementById('m-acv').innerText = data.av + 'V';"
-" document.getElementById('m-hz').innerText = data.hz.toFixed(1) + 'Hz';"
+"<div class='box'><h3>Diagnostic Telemetry Stream</h3><pre id='terminal'>Awaiting PGN frame updates...</pre></div>"
+"<div class='box'><h3>⚡ Hybrid Remote Controller Panel</h3>"
+"<button onclick='sendCmd(\"/gen-prime\")' class='btn-action btn-prime'>💽 Prime Fuel (12s)</button>"
+"<button onclick='sendCmd(\"/gen-start\")' class='btn-action btn-start'>🚀 Crank Start (4s)</button>"
+"<button onclick='sendCmd(\"/gen-stop\")' class='btn-action btn-stop'>🛑 Kill Engine (2s)</button></div>"
+"<script>function poll(){"
+" fetch('/telemetry-json').then(r=>r.json()).then(d=>{"
+" document.getElementById('m-volts').innerText=d.v.toFixed(1)+'V'; document.getElementById('m-rpm').innerText=Math.round(d.r)+' RPM';"
+" document.getElementById('m-temp').innerText=d.t+'°C'; document.getElementById('m-acv').innerText=d.av+'V'; document.getElementById('m-hz').innerText=d.hz.toFixed(1)+'Hz';"
+" "
+" // Dynamic RSSI formatting display"
+" let rStr = 'Disconn.'; if(d.sig !== 0) { rStr = d.sig + ' dBm'; }"
+" document.getElementById('m-rssi').innerText = rStr;"
 " });"
-" fetch('/telemetry').then(r => r.text()).then(text => { if(text.trim()!==''){ term.innerHTML=text; term.scrollTop=term.scrollHeight; } });"
-"}"
-"setInterval(pollTelemetry, 500); function controlGenerator(route){ fetch(route, {method:'POST'}); }"
-"function clearSystemLog(){ if(confirm('Wipe saved flash logs?')){ fetch('/clear-log',{method:'POST'}).then(() => { term.innerHTML=''; }); } }"
-"function uploadFile(){ var fi=document.getElementById('file-input'); if(fi.files.length===0){alert('Select .bin!');return;} jsUpdating=true; var fd=new FormData(); fd.append('update',fi.files); var xhr=new XMLHttpRequest(); xhr.open('POST','/update',true); document.getElementById('prg-wrapper').style.display='block'; document.getElementById('status-msg').innerText='Uploading firmware...';"
-"xhr.upload.addEventListener('progress',function(e){ if(e.lengthComputable){ var p=Math.round((e.loaded/e.total)*100); document.getElementById('prg-bar').style.width=p+'%'; document.getElementById('prg-bar').innerText=p+'%'; } });"
-"xhr.onload=function(){ if(xhr.status===200){ document.getElementById('status-msg').style.color='#00ff00'; document.getElementById('status-msg').innerText='✅ Success! Rebooting...'; }else{ document.getElementById('status-msg').innerText='❌ Failed: '+xhr.responseText; jsUpdating=false; } }; xhr.send(fd); }</script></body></html>";
+" fetch('/telemetry').then(r=>r.text()).then(t=>{ if(t.trim()!==''){ var term=document.getElementById('terminal'); term.innerHTML=t; term.scrollTop=term.scrollHeight; } });"
+"} setInterval(poll,500); function sendCmd(url){ fetch(url,{method:'POST'}); }</script></body></html>";
 
 void setup() {
     Serial.begin(115200);
@@ -198,11 +185,25 @@ void setup() {
     });
 
     server.on("/telemetry-json", HTTP_GET, []() {
-        char j_buf[120];
-        snprintf(j_buf, sizeof(j_buf), "{\"v\":%.2f,\"r\":%.2f,\"t\":%d,\"hz\":%.2f,\"av\":%u}", 
-                 liveBatteryVoltage, liveEngineRPM, liveInverterTemp, liveACFrequency, liveACVoltage);
+        int32_t activeRssiSignal = 0; // Default to 0 if no client is linked
+        
+        // Fetch station info list registers from the Espressif Wi-Fi SoftAP driver core
+        wifi_sta_list_t connectedStations;
+        tcpip_adapter_sta_list_t adaptorStations;
+        
+        if (esp_wifi_ap_get_sta_list(&connectedStations) == ESP_OK) {
+            // If at least one device is connected, isolate the signal strength of the active client
+            if (connectedStations.num > 0) {
+                activeRssiSignal = connectedStations.sta[0].rssi; // Pull raw client dBm signal register
+            }
+        }
+
+        char j_buf[160]; // Secure array buffer footprint allocation size
+        snprintf(j_buf, sizeof(j_buf), "{\"v\":%.2f,\"r\":%.2f,\"t\":%d,\"hz\":%.2f,\"av\":%u,\"sig\":%d}", 
+                 liveBatteryVoltage, liveEngineRPM, liveInverterTemp, liveACFrequency, liveACVoltage, activeRssiSignal);
         server.send(200, "application/json", j_buf);
     });
+
 
     server.on("/update", HTTP_POST, []() { server.send(200, "text/plain", "OK"); delay(1000); ESP.restart(); }, []() {
         HTTPUpload& u = server.upload();

@@ -44,21 +44,6 @@ To bypass critical microcontroller boot configuration requirements (strapping pi
 ---
 
 
----
-
-## 🎯 J1939 Network Telemetry & Multi-PGN Parsing Matrix
-
-The Cummins HGLCA platform splits real-time metrics across distinct Parameter Group Numbers (PGNs). The firmware operates an **Accept All Pass Filter**, utilizing Little Endian multi-byte realignment to populate the telemetry indicators simultaneously:
-
-*   **Genset State / Status (PGN 65280)**: Byte 0. Mapped states: `1`=Stopped, `2`=Cranking, `3`=Running, `5`=Priming, `6`=Fault Target.
-*   **Engine Speed / RPM (PGN 61444)**: Bytes 4-5. Resolution: `0.125 RPM/bit`.
-*   **Inverter Temperature (PGN 64409)**: Byte 3. Resolution: `1 °C/bit` with a `-40 °C` offset.
-*   **AC RMS Output Voltage (PGN 65030)**: Bytes 3-4. Resolution: `1 V/bit`.
-*   **AC Line Frequency (PGN 65030)**: Bytes 5-6. Resolution: `1/128 Hz/bit`.
-*   **DC Battery System Input (PGN 65271)**: Bytes 5-6. Resolution: `0.05 V/bit`.
-
----
-
 ## 📡 Remote Control Automation Engine (PGN 65281)
 
 Remote operation is achieved entirely over software data streams. Commands bypass safety blocks by utilizing **Source Address `0x27`** (Authorized Service/Diagnostic Tool profile) targeting the dedicated control registration pipeline explicitly:

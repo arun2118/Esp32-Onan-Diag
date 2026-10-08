@@ -18,9 +18,9 @@
 #include <ArduinoOTA.h>
 #include <LittleFS.h>
 
-#define CTX_PIN GPIO_NUM_1
-#define CRX_PIN GPIO_NUM_0
-#define STATUS_LED_PIN GPIO_NUM_8
+#define CRX_PIN GPIO_NUM_16  // CAN Data Received From Transceiver Rx
+#define CTX_PIN GPIO_NUM_17  // CAN Data Transmitted To Transceiver Tx
+#define STATUS_LED_PIN 2
 
 unsigned long lastLedToggle = 0;
 unsigned long lastDataReceivedTime = 0;
